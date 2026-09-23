@@ -1,0 +1,128 @@
+:root {
+  --ink: #1c1917;
+  --muted: #57534e;
+  --paper: #f6f1e8;
+  --card: #fffdf8;
+  --line: #d6d3d1;
+  --accent: #0f766e;
+  --accent-ink: #f0fdfa;
+  --danger: #b91c1c;
+  --ok: #166534;
+  --warn: #b45309;
+  --disabled: #a8a29e;
+  font-family: "Segoe UI", "IBM Plex Sans", sans-serif;
+  color: var(--ink);
+  background: var(--paper);
+  line-height: 1.45;
+}
+
+* { box-sizing: border-box; }
+body { margin: 0; }
+a { color: var(--accent); }
+button, input, select, textarea { font: inherit; }
+
+.shell { display: grid; grid-template-columns: 240px 1fr; min-height: 100vh; }
+.nav {
+  background: #1c1917;
+  color: #f5f5f4;
+  padding: 1.25rem 0.9rem;
+  display: flex;
+  flex-direction: column;
+  gap: 0.35rem;
+}
+.nav h1 { font-size: 1.05rem; margin: 0 0 0.8rem; font-weight: 650; letter-spacing: 0.02em; }
+.nav a, .nav .nav-btn {
+  color: #e7e5e4;
+  text-decoration: none;
+  padding: 0.45rem 0.6rem;
+  border-radius: 6px;
+  display: block;
+  border: 0;
+  background: transparent;
+  text-align: left;
+  width: 100%;
+  cursor: pointer;
+}
+.nav a.active { background: var(--accent); color: var(--accent-ink); }
+.nav a:hover, .nav .nav-btn:hover { background: #292524; }
+.nav .disabled {
+  color: var(--disabled);
+  cursor: not-allowed;
+  opacity: 0.85;
+}
+.nav .hint { font-size: 0.75rem; color: #a8a29e; margin: 0.15rem 0.6rem 0.8rem; }
+.main { padding: 1.5rem 2rem 3rem; max-width: 1100px; }
+h2 { margin: 0 0 0.4rem; font-size: 1.45rem; }
+.lead { color: var(--muted); margin: 0 0 1.2rem; }
+.card {
+  background: var(--card);
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  padding: 1rem 1.1rem;
+  margin-bottom: 1rem;
+}
+.row { display: flex; gap: 0.6rem; flex-wrap: wrap; align-items: center; }
+label { display: block; font-size: 0.9rem; margin-bottom: 0.25rem; }
+input[type="text"], input[type="number"], select, textarea {
+  width: 100%;
+  padding: 0.45rem 0.55rem;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  background: #fff;
+}
+textarea { min-height: 220px; font-family: ui-monospace, Consolas, monospace; font-size: 0.85rem; }
+textarea.lista-cola { min-height: 88px; font-family: inherit; font-size: inherit; }
+.btn {
+  background: var(--accent);
+  color: #fff;
+  border: 0;
+  border-radius: 6px;
+  padding: 0.45rem 0.9rem;
+  cursor: pointer;
+}
+.btn:disabled { background: var(--disabled); cursor: not-allowed; }
+.btn.sec { background: #fff; color: var(--ink); border: 1px solid var(--line); }
+.btn.danger { background: var(--danger); }
+.err { color: var(--danger); margin: 0.5rem 0; }
+.ok { color: var(--ok); }
+.warn { color: var(--warn); }
+.muted { color: var(--muted); font-size: 0.85rem; }
+.comp { color: var(--muted); font-size: 0.8rem; margin-left: 0.4rem; }
+.list { list-style: none; padding: 0; margin: 0.4rem 0 0.8rem; }
+.list li {
+  display: flex; justify-content: space-between; gap: 0.5rem;
+  padding: 0.35rem 0; border-bottom: 1px solid var(--line);
+}
+table { width: 100%; border-collapse: collapse; font-size: 0.9rem; }
+th, td { text-align: left; padding: 0.4rem 0.45rem; border-bottom: 1px solid var(--line); vertical-align: top; }
+.tag {
+  display: inline-block;
+  padding: 0.1rem 0.45rem;
+  border-radius: 999px;
+  font-size: 0.78rem;
+  background: #e7e5e4;
+}
+.tag.ok { background: #dcfce7; color: var(--ok); }
+.tag.bad { background: #fee2e2; color: var(--danger); }
+.tag.wait { background: #fef3c7; color: #92400e; }
+.tag.fail { background: #ffe4e6; color: #9f1239; }
+.tag.mid { background: #e0f2fe; color: #075985; }
+.switch { display: flex; align-items: center; gap: 0.5rem; margin-bottom: 0.6rem; }
+.preview {
+  white-space: pre-wrap;
+  background: #1c1917;
+  color: #f5f5f4;
+  padding: 0.9rem;
+  border-radius: 8px;
+  font-size: 0.82rem;
+  max-height: 420px;
+  overflow: auto;
+}
+.modal-bg {
+  position: fixed; inset: 0; background: rgba(28,25,23,0.45);
+  display: flex; align-items: center; justify-content: center; padding: 1rem;
+}
+.modal { background: var(--card); border-radius: 10px; padding: 1.2rem; max-width: 560px; width: 100%; }
+@media (max-width: 800px) {
+  .shell { grid-template-columns: 1fr; }
+}

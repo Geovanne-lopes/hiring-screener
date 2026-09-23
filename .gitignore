@@ -1,0 +1,15 @@
+.env
+data/*.sqlite
+data/*.sqlite-journal
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.venv/
+venv/
+apps/api/.venv/
+node_modules/
+dist/
+*.egg-info/
+.DS_Store
+Thumbs.db
+apps/web/dist/
