@@ -4,19 +4,26 @@ from __future__ import annotations
 
 from typing import Any
 
+from triagem.comparacao import frase_casa, palavras, parse_idade, texto_comparado
 from triagem.normalizacao import normalizar, para_string, texto_apos_strip_e_espaco
 
 CRITERIO_CARGO = "cargo"
+CRITERIO_EMPRESA = "empresa"
 CRITERIO_IDADE = "idade"
 CRITERIO_ESCOLARIDADE = "escolaridade"
 
 COD_CARGO_FORA = "cargo_fora_da_lista"
+COD_CARGO_BLOQUEADO = "cargo_bloqueado"
+COD_EMPRESA_BLOQUEADA = "empresa_bloqueada"
 COD_IDADE_FORA = "idade_fora_da_faixa"
 COD_ESC_FORA = "escolaridade_fora_da_lista"
 COD_DADO_INVALIDO = "dado_obrigatorio_ausente_ou_invalido"
 
 MSG_CARGOS_VAZIO = (
-    "Não é possível executar a triagem: o critério de cargos aceitos está ativo e a lista está vazia."
+    "Não é possível executar a triagem: o critério de cargos está ativo e as listas de aceitos e de bloqueados estão vazias."
+)
+MSG_EMPRESAS_VAZIO = (
+    "Não é possível executar a triagem: o critério de empresas bloqueadas está ativo e a lista está vazia."
 )
 MSG_IDADE_FAIXA = (
     "Não é possível executar a triagem: o critério de idade está ativo e a faixa (mínima e máxima) não está preenchida."
@@ -31,11 +38,47 @@ MSG_SEM_PROJETO = "Abra ou crie um projeto para continuar."
 
 def criterios_iniciais() -> dict[str, Any]:
     return {
-        "cargos": {"ativo": False, "aceitos": []},
+        "cargos": {"ativo": False, "aceitos": [], "bloqueados": []},
+        "empresas": {"ativo": False, "bloqueadas": []},
         "idade": {"ativo": False, "minima": None, "maxima": None},
         "escolaridade": {
             "ativo": False,
             "configuracao": {"modelo": "lista_valores_aceitos", "aceitos": []},
+        },
+    }
+
+
+def completar_criterios(criterios: dict[str, Any] | None) -> dict[str, Any]:
+    """Critério antigo sem bloqueados ou sem empresas continua legível."""
+    base = criterios_iniciais()
+    if not criterios:
+        return base
+    cargos = criterios.get("cargos") or {}
+    empresas = criterios.get("empresas") or {}
+    idade = criterios.get("idade") or {}
+    escolaridade = criterios.get("escolaridade") or {}
+    configuracao = escolaridade.get("configuracao") or {}
+    return {
+        "cargos": {
+            "ativo": bool(cargos.get("ativo")),
+            "aceitos": list(cargos.get("aceitos") or []),
+            "bloqueados": list(cargos.get("bloqueados") or []),
+        },
+        "empresas": {
+            "ativo": bool(empresas.get("ativo")) if "empresas" in criterios else False,
+            "bloqueadas": list(empresas.get("bloqueadas") or []),
+        },
+        "idade": {
+            "ativo": bool(idade.get("ativo")),
+            "minima": idade.get("minima", base["idade"]["minima"]),
+            "maxima": idade.get("maxima", base["idade"]["maxima"]),
+        },
+        "escolaridade": {
+            "ativo": bool(escolaridade.get("ativo")),
+            "configuracao": {
+                "modelo": configuracao.get("modelo") or "lista_valores_aceitos",
+                "aceitos": list(configuracao.get("aceitos") or []),
+            },
         },
     }
 
@@ -82,18 +125,30 @@ def mensagens_bloqueio_execucao(
         msgs.append(MSG_SEM_LOTE)
         return msgs
 
+    criterios = completar_criterios(criterios)
     cargos = criterios.get("cargos") or {}
+    empresas = criterios.get("empresas") or {}
     idade = criterios.get("idade") or {}
     escolaridade = criterios.get("escolaridade") or {}
     mapa = mapeamento or {}
 
     if cargos.get("ativo"):
         aceitos = _itens_validos(cargos.get("aceitos"))
-        if not aceitos:
+        bloqueados = _itens_validos(cargos.get("bloqueados"))
+        if not aceitos and not bloqueados:
             msgs.append(MSG_CARGOS_VAZIO)
         if not (mapa.get("ultimoCargo") or "").strip():
             msgs.append(
                 "Não é possível executar a triagem: o critério de cargo está ativo e a coluna correspondente não foi mapeada."
+            )
+
+    if empresas.get("ativo"):
+        bloqueadas = _itens_validos(empresas.get("bloqueadas"))
+        if not bloqueadas:
+            msgs.append(MSG_EMPRESAS_VAZIO)
+        if not (mapa.get("empresa") or "").strip():
+            msgs.append(
+                "Não é possível executar a triagem: o critério de empresa está ativo e a coluna correspondente não foi mapeada."
             )
 
     if idade.get("ativo"):
@@ -124,19 +179,7 @@ def mensagens_bloqueio_execucao(
 
 
 def _parse_idade_celula(valor: object) -> int | None:
-    texto = texto_apos_strip_e_espaco(valor)
-    if not texto:
-        return None
-    try:
-        n = float(texto)
-    except ValueError:
-        return None
-    if not n.is_integer():
-        return None
-    idade = int(n)
-    if not (0 < idade <= 120):
-        return None
-    return idade
+    return parse_idade(valor)
 
 
 def _eh_lixo_formula(valor: object) -> bool:
@@ -163,48 +206,95 @@ def _motivo(
     return item
 
 
-def _cargo_bate_com_aceito(lido_norm: str, aceito_norm: str) -> bool:
-    """Igual, ou o aceito seguido de complemento depois de /, | ou traço.
-
-    "Analista de CRM Pleno / Martech" bate com "Analista de CRM Pleno".
-    "Vendedor Externo" não bate com "Vendedor".
-    """
-    if not aceito_norm or not lido_norm:
-        return False
-    if lido_norm == aceito_norm:
+def _celula_vazia(valor: object) -> bool:
+    if valor is None or not isinstance(valor, str):
         return True
-    if not lido_norm.startswith(aceito_norm):
-        return False
-    resto = lido_norm[len(aceito_norm) :].lstrip(" ")
-    return resto.startswith(("/", "|", "-", "–", "—"))
+    return texto_apos_strip_e_espaco(valor) == ""
 
 
-def _avaliar_cargo(candidato: dict[str, Any], criterios: dict[str, Any]) -> dict[str, Any] | None:
-    aceitos: list[str] = list((criterios.get("cargos") or {}).get("aceitos") or [])
+def _avaliar_cargo(candidato: dict[str, Any], criterios: dict[str, Any]) -> list[dict[str, Any]]:
+    cargos = criterios.get("cargos") or {}
+    aceitos: list[str] = list(cargos.get("aceitos") or [])
+    bloqueados: list[str] = list(cargos.get("bloqueados") or [])
     lido = candidato.get("ultimoCargo")
-    if lido is None or not isinstance(lido, str) or texto_apos_strip_e_espaco(lido) == "":
+    if _celula_vazia(lido):
+        return [
+            _motivo(
+                CRITERIO_CARGO,
+                COD_DADO_INVALIDO,
+                "Dado obrigatório ausente ou inválido no critério cargo: último cargo não informado ou vazio.",
+                lido,
+                None,
+            )
+        ]
+    comparado = texto_comparado(lido)
+    motivos: list[dict[str, Any]] = []
+    aceitos_validos = [item for item in aceitos if palavras(item)]
+    if aceitos_validos and not any(
+        frase_casa(lido, termo, genero=True, abreviacao=True) for termo in aceitos_validos
+    ):
+        lista_txt = ", ".join(aceitos_validos)
+        motivos.append(
+            _motivo(
+                CRITERIO_CARGO,
+                COD_CARGO_FORA,
+                (
+                    f'Último cargo "{lido}" (comparado como "{comparado}") '
+                    f"não está na lista de cargos aceitos: {lista_txt}."
+                ),
+                lido,
+                comparado,
+                aceitos_validos,
+            )
+        )
+    for termo in bloqueados:
+        if not palavras(termo):
+            continue
+        if frase_casa(lido, termo, genero=True, abreviacao=True):
+            motivos.append(
+                _motivo(
+                    CRITERIO_CARGO,
+                    COD_CARGO_BLOQUEADO,
+                    (
+                        f'Último cargo "{lido}" (comparado como "{comparado}") '
+                        f'contém o cargo bloqueado "{termo}".'
+                    ),
+                    lido,
+                    comparado,
+                    termo,
+                )
+            )
+            break
+    return motivos
+
+
+def _avaliar_empresa(candidato: dict[str, Any], criterios: dict[str, Any]) -> dict[str, Any] | None:
+    bloqueadas: list[str] = list((criterios.get("empresas") or {}).get("bloqueadas") or [])
+    lido = candidato.get("empresa")
+    if _celula_vazia(lido):
         return _motivo(
-            CRITERIO_CARGO,
+            CRITERIO_EMPRESA,
             COD_DADO_INVALIDO,
-            "Dado obrigatório ausente ou inválido no critério cargo: último cargo não informado ou vazio.",
+            "Dado obrigatório ausente ou inválido no critério empresa: empresa não informada ou vazia.",
             lido,
             None,
         )
-    comparado = normalizar(lido)
-    aceitos_comp = [normalizar(item) for item in aceitos if normalizar(item)]
-    if not any(_cargo_bate_com_aceito(comparado, termo) for termo in aceitos_comp):
-        lista_txt = ", ".join(aceitos)
-        return _motivo(
-            CRITERIO_CARGO,
-            COD_CARGO_FORA,
-            (
-                f'Último cargo "{lido}" (comparado como "{comparado}") '
-                f"não está na lista de cargos aceitos: {lista_txt}."
-            ),
-            lido,
-            comparado,
-            aceitos,
-        )
+    comparado = texto_comparado(lido)
+    for termo in bloqueadas:
+        if not palavras(termo):
+            continue
+        if frase_casa(lido, termo, genero=False, abreviacao=False):
+            return _motivo(
+                CRITERIO_EMPRESA,
+                COD_EMPRESA_BLOQUEADA,
+                (
+                    f'Empresa "{lido}" (comparada como "{comparado}") '
+                    f'contém a empresa bloqueada "{termo}".'
+                ),
+                lido,
+                comparado,
+                termo,
+            )
     return None
 
 
@@ -249,39 +339,46 @@ def _avaliar_escolaridade(candidato: dict[str, Any], criterios: dict[str, Any]) 
             None if lido is None else lido,
             None,
         )
-    comparado = normalizar(lido)
-    aceitos_comp = [normalizar(item) for item in aceitos if normalizar(item)]
-    if not any(termo in comparado for termo in aceitos_comp):
-        lista_txt = ", ".join(aceitos)
+    comparado = texto_comparado(lido)
+    aceitos_validos = [item for item in aceitos if palavras(item)]
+    if not any(frase_casa(lido, termo, genero=False, abreviacao=False) for termo in aceitos_validos):
+        lista_txt = ", ".join(aceitos_validos)
         return _motivo(
             CRITERIO_ESCOLARIDADE,
             COD_ESC_FORA,
             (
                 f'Escolaridade "{lido}" (comparada como "{comparado}") '
-                f"não contém nenhum valor aceito: {lista_txt}."
+                f"não contém nenhuma frase aceita: {lista_txt}."
             ),
             lido,
             comparado,
-            aceitos,
+            aceitos_validos,
         )
     return None
 
 
 def avaliar_candidato(candidato: dict[str, Any], criterios: dict[str, Any]) -> dict[str, Any]:
     """Função pura. Avalia todos os critérios ativos; não para na primeira falha."""
+    criterios = completar_criterios(criterios)
     motivos: list[dict[str, Any]] = []
     inativos: list[str] = []
 
     cargos = criterios.get("cargos") or {}
+    empresas = criterios.get("empresas") or {}
     idade = criterios.get("idade") or {}
     escolaridade = criterios.get("escolaridade") or {}
 
     if cargos.get("ativo"):
-        motivo = _avaliar_cargo(candidato, criterios)
+        motivos.extend(_avaliar_cargo(candidato, criterios))
+    else:
+        inativos.append(CRITERIO_CARGO)
+
+    if empresas.get("ativo"):
+        motivo = _avaliar_empresa(candidato, criterios)
         if motivo:
             motivos.append(motivo)
     else:
-        inativos.append(CRITERIO_CARGO)
+        inativos.append(CRITERIO_EMPRESA)
 
     if idade.get("ativo"):
         motivo = _avaliar_idade(candidato, criterios)

@@ -1,12 +1,13 @@
 # Histórico do produto (specs)
 
-## Estado atual (2026-09-22)
+## Estado atual (2026-09-23)
 
 - Legado analisado no repositório `data-visualization-carrefour/data-visualisation-carrefour`.
 - Sistema novo em implementação na sprint 1 (`apps/api`, `apps/web`).
 - Spec da etapa 1 escrita: `specs/sprint-1/triagem-deterministica.md`.
 - Spec da etapa 2 escrita: `specs/sprint-1/avaliacao-ia-chatbot.md`.
 - Spec da etapa 3 escrita: `specs/sprint-2/trajetoria-profissional.md` (sprint posterior; **não** entra na primeira entrega).
+- Revisão de operação especificada e **ainda não implementada**: `specs/revisao/01-job-description.md`, `specs/revisao/02-analise-por-pergunta.md`, `specs/revisao/03-rankings.md`. Onde divergir da etapa 2, a revisão prevalece no disparo novo. A triagem dura não muda.
 - Não há CSV/XLSX local no disco analisado; colunas de texto de chatbot, resumo e headline não foram inventadas.
 
 ### 2026-09-22 — Implementador sprint 1: `candidatoId` composto (não UUID)
@@ -111,6 +112,44 @@ Se um agente posterior precisar mudar contrato, **não reescreve** o arquivo do 
 **Mudança proposta ao orquestrador (opcional).** Documentar os tipos e rótulos no contrato e no glossário quando a sprint 2 for puxada. Acrescentar módulo `trajetoria` no diagrama de módulos, reusando o adaptador da ADR 004, sem misturar o prompt da etapa 2. Até lá, este agente não reescreveu arquitetura nem contratos.
 
 **O que a spec da etapa 3 fez com `candidatoId`.** Igual à etapa 2: usa o id já persistido no lote. Não reabre UUID vs linha+hash.
+
+### 2026-09-23 — Revisão: job description, análise por pergunta, rankings
+
+**Não reescreve** `specs/sprint-1/avaliacao-ia-chatbot.md`, os contratos nem as ADRs. Três specs novas prevalecem no disparo novo.
+
+| Arquivo | Conteúdo |
+|---|---|
+| `specs/revisao/01-job-description.md` | Etapa depois dos critérios duros. Texto da vaga versionado. Variável `{{job_description}}` |
+| `specs/revisao/02-analise-por-pergunta.md` | Sai a etapa de critérios qualitativos. A pergunta é o cabeçalho da coluna. Cruzamento com a resposta e com a job description |
+| `specs/revisao/03-rankings.md` | Notas 0–100 técnica e comportamental (escrita). Final = média, meio para cima. Posição calculada no lote |
+
+**Conflito com a etapa 2.** A spec de chatbot exige critérios qualitativos, `{{criterios_qualitativos}}`, flag `eliminatorio` e compatibilidade calculada (`compativel` / `parcial` / `incompativel`). A revisão tira essa etapa. O gate de quem chama o modelo permanece: só elegível com resposta utilizável.
+
+**Conflito com o contrato.** `CriteriosQualitativos` deixa de ser obrigatório para disparar. `AvaliacaoIa` de disparo novo guarda notas e `por_pergunta` em vez da compatibilidade calculada. Avaliações já gravadas no schema antigo não ganham nota inventada.
+
+**Conflito com duplicar projeto.** A etapa 1 copia só critérios duros. A spec 01 também copia a job description vigente.
+
+**O que não muda.** Triagem determinística. Botão de trajetória desabilitado. Nome e critérios duros fora do prompt. Inelegível não vai ao LLM.
+
+**Implementação.** As specs 01, 02 e 03 foram implementadas em seguida. A frase de espera acima vale só para o momento em que foi escrita.
+
+### 2026-09-23 — Revisão: contains de cargo, bloqueio, empresa e idade com “anos”
+
+**Não reescreve** `specs/sprint-1/triagem-deterministica.md`. Prevalece `specs/revisao/04-criterios-duros-cargo-empresa-idade.md`.
+
+**Conflito.** A etapa 1 manda igualdade depois da normalização, sem `contains` e sem sinônimo no código. O código já tinha uma exceção: o aceito seguido de traço, barra ou pipe casa; `Assistente Comercial pleno` não casa. A revisão troca isso por palavras seguidas dentro do cargo, gênero mecânico e só três abreviações fixas: `Sr`, `Pl` e `Jr`. Não há tradução para o inglês. Escolaridade continua igualdade.
+
+**O que entra.** Lista de cargos bloqueados (o bloqueio ganha do aceito). Critério de empresas bloqueadas, com coluna mapeada `empresa`. Idade lê `37 Anos`, `37 - Anos`, `37 Años` e `37 anos e 2 meses` como 37. Os meses não entram na conta.
+
+**Sem IA.** Gênero e as abreviações `Sr`, `Pl` e `Jr` são automáticos. Inglês não entra sozinho. Cargo, empresa e idade continuam fora do prompt.
+
+### 2026-09-24 — Revisão: justificativa da nota técnica e da nota comportamental
+
+**Não reescreve** `specs/revisao/02-analise-por-pergunta.md` nem `specs/revisao/03-rankings.md`. Prevalece `specs/revisao/05-justificativa-das-notas.md` no disparo novo.
+
+**Conflito.** A spec 02 exige exatamente as chaves `perfil`, `por_pergunta`, `trechos`, `nota_tecnica`, `nota_comportamental`. A spec 03 descreve o Excel com `Busca LKD` e sem resumo nem justificativa. O produto já exporta sem `Busca LKD`, com `Resumo` e com uma coluna `Justificativa pergunta N`. A spec 05 acrescenta `justificativa_nota_tecnica` e `justificativa_nota_comportamental`, obrigatórias no JSON novo, e fixa a ordem atual do Excel mais essas duas colunas.
+
+**O que não muda.** Escala, média, posição e zeramento da nota técnica. `perfil` continua o resumo. Justificativa por pergunta continua. Avaliação já gravada não ganha texto inventado. Triagem dura e trajetória ficam fora.
 
 ## Correções do retrato prévio do orquestrador, feitas na spec de legado
 

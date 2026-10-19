@@ -11,12 +11,13 @@ from persistencia.models import (
     CriteriosDeterministicosVersao,
     CriteriosQualitativosVersao,
     DecisaoTriagem,
+    JobDescriptionVersao,
     PromptDoProjeto,
     Projeto,
     RegistroChamada,
     agora,
 )
-from triagem.avaliar import criterios_iniciais
+from triagem.avaliar import completar_criterios, criterios_iniciais
 
 
 def novo_id(prefixo: str) -> str:
@@ -53,11 +54,15 @@ def renomear_projeto(db: Session, projeto: Projeto, nome: str) -> Projeto:
 
 def duplicar_projeto(db: Session, origem: Projeto, nome: str) -> Projeto:
     snapshot = criterios_det_vigentes(db, origem.id) or criterios_iniciais()
+    jd = job_description_vigente(db, origem.id)
     novo = Projeto(id=novo_id("prj"), nome=nome.strip(), criado_em=agora(), atualizado_em=agora())
     db.add(novo)
     db.flush()
     versao = _nova_versao_det(db, novo.id, snapshot)
     novo.criterios_det_vigente_id = versao.id
+    if jd is not None:
+        copia = _nova_job_description(db, novo, jd.texto)
+        novo.job_description_vigente_id = copia.id
     db.commit()
     db.refresh(novo)
     return novo
@@ -85,7 +90,7 @@ def criterios_det_vigentes(db: Session, projeto_id: str) -> dict | None:
     if not projeto or not projeto.criterios_det_vigente_id:
         return None
     row = db.get(CriteriosDeterministicosVersao, projeto.criterios_det_vigente_id)
-    return None if row is None else row.snapshot
+    return None if row is None else completar_criterios(row.snapshot)
 
 
 def salvar_criterios_det(db: Session, projeto: Projeto, snapshot: dict) -> CriteriosDeterministicosVersao:
@@ -111,6 +116,7 @@ def substituir_lote(db: Session, projeto: Projeto, mapeamento: dict, candidatos:
                 ultimo_cargo=cand.get("ultimoCargo"),
                 idade=cand.get("idade"),
                 escolaridade=cand.get("escolaridade"),
+                empresa=cand.get("empresa"),
                 nome_exibicao=cand.get("nomeExibicao"),
                 telefone=cand.get("telefone"),
                 email=cand.get("email"),
@@ -143,6 +149,7 @@ def candidato_para_dict(row: CandidatoImportado) -> dict:
         "ultimoCargo": row.ultimo_cargo,
         "idade": row.idade,
         "escolaridade": row.escolaridade,
+        "empresa": row.empresa,
         "nomeExibicao": row.nome_exibicao,
         "telefone": row.telefone,
         "email": row.email,
@@ -215,7 +222,55 @@ def listar_prompts(db: Session, projeto_id: str) -> list[PromptDoProjeto]:
     )
 
 
-def salvar_prompt(db: Session, projeto: Projeto, template: str, qual: CriteriosQualitativosVersao) -> PromptDoProjeto:
+def job_description_vigente(db: Session, projeto_id: str) -> JobDescriptionVersao | None:
+    projeto = obter_projeto(db, projeto_id)
+    if not projeto or not projeto.job_description_vigente_id:
+        return None
+    return db.get(JobDescriptionVersao, projeto.job_description_vigente_id)
+
+
+def listar_job_descriptions(db: Session, projeto_id: str) -> list[JobDescriptionVersao]:
+    return list(
+        db.scalars(
+            select(JobDescriptionVersao)
+            .where(JobDescriptionVersao.projeto_id == projeto_id)
+            .order_by(JobDescriptionVersao.versao)
+        )
+    )
+
+
+def _nova_job_description(db: Session, projeto: Projeto, texto: str) -> JobDescriptionVersao:
+    ultimo = db.scalar(
+        select(func.max(JobDescriptionVersao.versao)).where(JobDescriptionVersao.projeto_id == projeto.id)
+    ) or 0
+    n = int(ultimo) + 1
+    row = JobDescriptionVersao(
+        id=f"jd_{projeto.id}_{n:02d}",
+        versao=n,
+        projeto_id=projeto.id,
+        texto=texto,
+        criado_em=agora(),
+    )
+    db.add(row)
+    db.flush()
+    return row
+
+
+def salvar_job_description(db: Session, projeto: Projeto, texto: str) -> JobDescriptionVersao:
+    row = _nova_job_description(db, projeto, texto)
+    projeto.job_description_vigente_id = row.id
+    projeto.atualizado_em = agora()
+    db.commit()
+    db.refresh(row)
+    return row
+
+
+def salvar_prompt(
+    db: Session,
+    projeto: Projeto,
+    template: str,
+    job: JobDescriptionVersao,
+) -> PromptDoProjeto:
     qtd = db.scalar(
         select(func.count()).select_from(PromptDoProjeto).where(PromptDoProjeto.projeto_id == projeto.id)
     ) or 0
@@ -225,8 +280,10 @@ def salvar_prompt(db: Session, projeto: Projeto, template: str, qual: CriteriosQ
         versao=n,
         projeto_id=projeto.id,
         template=template,
-        criterios_qualitativos_versao_id=qual.id,
-        criterios_embutidos_snapshot=qual.itens,
+        criterios_qualitativos_versao_id="",
+        criterios_embutidos_snapshot=[],
+        job_description_versao_id=job.id,
+        job_description_snapshot=job.texto,
         criado_em=agora(),
     )
     db.add(row)
@@ -253,10 +310,19 @@ def gravar_avaliacao(db: Session, projeto: Projeto, resultado: dict) -> Avaliaca
         candidato_id=resultado["candidatoId"],
         projeto_id=projeto.id,
         prompt_version_id=resultado["promptVersionId"],
-        criterios_qualitativos_versao_id=resultado["criteriosQualitativosVersaoId"],
+        criterios_qualitativos_versao_id=resultado.get("criteriosQualitativosVersaoId") or "",
+        job_description_versao_id=resultado.get("jobDescriptionVersaoId"),
         perfil=resultado.get("perfil"),
         compatibilidade=resultado.get("compatibilidade"),
         justificativas_por_criterio=resultado.get("justificativasPorCriterio"),
+        por_pergunta=resultado.get("porPergunta"),
+        trechos=resultado.get("trechos"),
+        nota_tecnica=resultado.get("notaTecnica"),
+        nota_comportamental=resultado.get("notaComportamental"),
+        justificativa_nota_tecnica=resultado.get("justificativaNotaTecnica"),
+        justificativa_nota_comportamental=resultado.get("justificativaNotaComportamental"),
+        nota_final=resultado.get("notaFinal"),
+        nota_tecnica_zerada_por_falta_de_informacao=bool(resultado.get("notaTecnicaZeradaPorFaltaDeInformacao")),
         uso_token=uso,
         estado=resultado["estado"],
         erro=resultado.get("erro"),

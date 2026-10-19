@@ -60,12 +60,12 @@ def _kwargs(**extra):
             "semresp": {"resultado": "elegivel"},
             "ok": {"resultado": "elegivel"},
         },
-        template="id {{candidato_id}}\n{{criterios_qualitativos}}\n{{respostas_candidato}}",
+        template="id {{candidato_id}}\n{{job_description}}\n{{perguntas_respostas}}",
         prompt_id="prm_01",
-        criterios_prompt_versao_id="crt_qual_01",
-        criterios_vigente_id="crt_qual_01",
-        itens_embutidos=ITENS,
         mapeamento={"respostasChatbot": ["R1"]},
+        job_description_snapshot="Descricao geral da vaga de atendimento.",
+        job_description_versao_id="jd_01",
+        job_description_vigente_id="jd_01",
     )
     base.update(extra)
     return base
@@ -106,35 +106,25 @@ def test_cliente_so_para_elegivel_com_resposta(monkeypatch):
             self.chamadas += 1
             user = mensagens[1]["content"]
             assert "ineleg" not in user
+            assert "Cabeçalho: R1" in user
+            assert "{{criterios_qualitativos}}" not in user
+            assert "Disponibilidade de horário" not in user
             trecho = "Consigo trabalhar em horário comercial."
             corpo = {
                 "perfil": "A pessoa declara horário comercial nas respostas.",
-                "compatibilidade": "compativel",
-                "por_criterio": [
+                "por_pergunta": [
                     {
-                        "criterioId": "cq_01",
-                        "nome": "Disponibilidade de horário",
+                        "perguntaId": "p1",
+                        "pergunta": "R1",
                         "resultado": "atende",
-                        "justificativa": f'Há declaração: "{trecho}"',
-                    },
-                    {
-                        "criterioId": "cq_02",
-                        "nome": "Experiência relatada no atendimento",
-                        "resultado": "sem_informacao",
-                        "justificativa": "Não há relato de experiência.",
-                    },
-                    {
-                        "criterioId": "cq_03",
-                        "nome": "Aderência ao tipo de atendimento",
-                        "resultado": "sem_informacao",
-                        "justificativa": "Não há informação.",
-                    },
+                        "justificativa": "A resposta declara o horário comercial.",
+                    }
                 ],
-                "trechos": [
-                    {"criterioId": "cq_01", "nome": "Disponibilidade de horário", "trecho": trecho},
-                    {"criterioId": "cq_02", "nome": "Experiência relatada no atendimento", "trecho": ""},
-                    {"criterioId": "cq_03", "nome": "Aderência ao tipo de atendimento", "trecho": ""},
-                ],
+                "trechos": [{"perguntaId": "p1", "trecho": trecho}],
+                "nota_tecnica": 80,
+                "nota_comportamental": 60,
+                "justificativa_nota_tecnica": "A resposta cobre o pedido da vaga. Isso cabe na faixa da rubrica técnica.",
+                "justificativa_nota_comportamental": "O texto é claro e organizado. Isso cabe na faixa da escrita.",
             }
             import json
 
@@ -150,7 +140,10 @@ def test_cliente_so_para_elegivel_com_resposta(monkeypatch):
     assert saida["enviados"] == ["ok"]
     assert cli.chamadas == 1
     assert saida["resultados"][0]["estado"] == "sucesso"
-    assert saida["resultados"][0]["compatibilidade"] == "parcial"
+    assert saida["resultados"][0]["compatibilidade"] is None
+    assert saida["resultados"][0]["porPergunta"][0]["pergunta"] == "R1"
+    assert saida["resultados"][0]["notaTecnica"] == 80
+    assert saida["resultados"][0]["notaComportamental"] == 60
 
 
 def test_compatibilidade_parcial_nao_e_compativel():
@@ -165,88 +158,65 @@ def test_compatibilidade_parcial_nao_e_compativel():
 def test_cerca_markdown_nao_impede_json_valido():
     import json
 
-    from avaliacao_ia.prompt import formatar_criterios
+    from avaliacao_ia.prompt import formatar_perguntas_respostas
     from avaliacao_ia.validacao import validar_saida_modelo
 
-    bloco = formatar_criterios(ITENS)
-    assert "criterioId: cq_01" in bloco
     trecho = "Consigo trabalhar em horário comercial."
+    respostas = [{"colunaMapeada": "R1", "texto": trecho}]
+    bloco = formatar_perguntas_respostas(respostas)
+    assert "Pergunta p1" in bloco
+    assert "Cabeçalho: R1" in bloco
     corpo = {
         "perfil": "A pessoa declara horário comercial nas respostas.",
-        "compatibilidade": "compativel",
-        "por_criterio": [
+        "por_pergunta": [
             {
-                "criterioId": "cq_01",
-                "nome": "Disponibilidade de horário",
+                "perguntaId": "p1",
+                "pergunta": "R1",
                 "resultado": "atende",
-                "justificativa": trecho,
-            },
-            {
-                "criterioId": "cq_02",
-                "nome": "Experiência relatada no atendimento",
-                "resultado": "sem_informacao",
-                "justificativa": "Não há relato.",
-            },
-            {
-                "criterioId": "cq_03",
-                "nome": "Aderência ao tipo de atendimento",
-                "resultado": "sem_informacao",
-                "justificativa": "Não há informação.",
-            },
+                "justificativa": "A resposta declara o horário.",
+            }
         ],
-        "trechos": [
-            {"criterioId": "cq_01", "nome": "Disponibilidade de horário", "trecho": trecho},
-            {"criterioId": "cq_02", "nome": "Experiência relatada no atendimento", "trecho": ""},
-            {"criterioId": "cq_03", "nome": "Aderência ao tipo de atendimento", "trecho": ""},
-        ],
+        "trechos": [{"perguntaId": "p1", "trecho": trecho}],
+        "nota_tecnica": 80,
+        "nota_comportamental": 60,
+        "justificativa_nota_tecnica": "A resposta cobre o pedido da vaga. Isso cabe na faixa da rubrica técnica.",
+        "justificativa_nota_comportamental": "O texto é claro e organizado. Isso cabe na faixa da escrita.",
     }
-    respostas = [{"colunaMapeada": "R1", "texto": trecho}]
-    validado = validar_saida_modelo("```json\n" + json.dumps(corpo) + "\n```", ITENS, respostas)
+    validado = validar_saida_modelo("```json\n" + json.dumps(corpo) + "\n```", respostas)
     assert validado["perfil"].startswith("A pessoa")
+    assert validado["nota_tecnica"] == 80
 
 
-def test_justificativa_sem_citacao_recebe_o_trecho():
+def test_trecho_fora_da_resposta_falha_e_justificativa_pode_nao_repetir_o_trecho():
     import json
 
     from avaliacao_ia.validacao import ErroValidacaoJson, validar_saida_modelo
 
     trecho = "Consigo trabalhar em horário comercial."
+    respostas = [{"colunaMapeada": "R1", "texto": trecho}]
     corpo = {
         "perfil": "A pessoa declara horário comercial nas respostas.",
-        "compatibilidade": "parcial",
-        "por_criterio": [
+        "por_pergunta": [
             {
-                "criterioId": "cq_01",
-                "nome": "Disponibilidade de horário",
+                "perguntaId": "p1",
+                "pergunta": "R1",
                 "resultado": "atende",
                 "justificativa": "Há disponibilidade de horário.",
-            },
-            {
-                "criterioId": "cq_02",
-                "nome": "Experiência relatada no atendimento",
-                "resultado": "sem_informacao",
-                "justificativa": "Não há relato.",
-            },
-            {
-                "criterioId": "cq_03",
-                "nome": "Aderência ao tipo de atendimento",
-                "resultado": "sem_informacao",
-                "justificativa": "Não há informação.",
-            },
+            }
         ],
-        "trechos": [
-            {"criterioId": "cq_01", "nome": "Disponibilidade de horário", "trecho": trecho},
-            {"criterioId": "cq_02", "nome": "Experiência relatada no atendimento", "trecho": ""},
-            {"criterioId": "cq_03", "nome": "Aderência ao tipo de atendimento", "trecho": ""},
-        ],
+        "trechos": [{"perguntaId": "p1", "trecho": trecho}],
+        "nota_tecnica": 70,
+        "nota_comportamental": 60,
+        "justificativa_nota_tecnica": "A resposta cobre o pedido da vaga. Isso cabe na faixa da rubrica técnica.",
+        "justificativa_nota_comportamental": "O texto é claro e organizado. Isso cabe na faixa da escrita.",
     }
-    respostas = [{"colunaMapeada": "R1", "texto": trecho}]
-    validado = validar_saida_modelo(json.dumps(corpo), ITENS, respostas)
-    assert trecho in validado["justificativasPorCriterio"][0]["justificativa"]
+    validado = validar_saida_modelo(json.dumps(corpo), respostas)
+    assert validado["por_pergunta"][0]["justificativa"] == "Há disponibilidade de horário."
+    assert validado["trechos"][0]["trecho"] == trecho
 
     corpo["trechos"][0]["trecho"] = "frase que o candidato não escreveu"
     try:
-        validar_saida_modelo(json.dumps(corpo), ITENS, respostas)
+        validar_saida_modelo(json.dumps(corpo), respostas)
         raise AssertionError("trecho inventado deveria falhar")
     except ErroValidacaoJson as erro:
         assert erro.codigo == "trecho_nao_encontrado"

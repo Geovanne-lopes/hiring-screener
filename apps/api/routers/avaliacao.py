@@ -1,15 +1,24 @@
 from __future__ import annotations
 
-from fastapi import APIRouter, Depends, HTTPException
+from urllib.parse import quote
+
+from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi.responses import Response
 from pydantic import BaseModel, Field
 from sqlalchemy.orm import Session
 
 import config
+from avaliacao_ia.exportar import planilha_resultado
+from avaliacao_ia.ranking import atribuir_posicoes, media_meio_para_cima
 from avaliacao_ia.prompt import (
+    MSG_JOB_DESCRIPTION_DESALINHADA,
+    MSG_PROMPT_SEM_JOB,
     TEMPLATE_INICIAL,
     parece_regra_dura,
+    template_e_antigo,
     validar_template,
 )
+from avaliacao_ia.validacao import rotulo_resultado
 from avaliacao_ia.resposta import resposta_utilizavel
 from avaliacao_ia.servico import RecusaLote, avaliar_lote, montar_preview, recusar_se_nao_configurado
 from persistencia.db import get_db
@@ -19,6 +28,7 @@ from persistencia.repositorio import (
     criterios_qual_vigentes,
     decisoes_por_candidato,
     gravar_avaliacao,
+    job_description_vigente,
     listar_candidatos,
     listar_prompts,
     novo_id,
@@ -142,6 +152,7 @@ def get_prompt(projeto_id: str, db: Session = Depends(get_db)):
             "versao": p.versao,
             "criadoEm": p.criado_em.isoformat() if p.criado_em else None,
             "criteriosQualitativosVersaoId": p.criterios_qualitativos_versao_id,
+            "jobDescriptionVersaoId": p.job_description_versao_id,
             "template": p.template,
         }
         for p in listar_prompts(db, projeto.id)
@@ -154,9 +165,13 @@ def get_prompt(projeto_id: str, db: Session = Depends(get_db)):
             "versao": vigente.versao,
             "template": vigente.template,
             "criteriosQualitativosVersaoId": vigente.criterios_qualitativos_versao_id,
+            "jobDescriptionVersaoId": vigente.job_description_versao_id,
+            "jobDescriptionSnapshot": vigente.job_description_snapshot,
             "criadoEm": vigente.criado_em.isoformat() if vigente.criado_em else None,
         },
         "templateInicial": TEMPLATE_INICIAL,
+        "modeloRevisao": TEMPLATE_INICIAL,
+        "templateAntigo": template_e_antigo(None if vigente is None else vigente.template),
         "versoes": versoes,
     }
 
@@ -167,15 +182,17 @@ def put_prompt(projeto_id: str, body: PromptIn, db: Session = Depends(get_db)):
     erro = validar_template(body.template)
     if erro:
         raise HTTPException(status_code=400, detail=erro)
-    qual = criterios_qual_vigentes(db, projeto.id)
-    if qual is None or not qual.itens:
-        raise HTTPException(status_code=400, detail="Cadastre ao menos um critério qualitativo da vaga.")
-    row = salvar_prompt(db, projeto, body.template, qual)
+    jd = job_description_vigente(db, projeto.id)
+    if jd is None or not (jd.texto or "").strip():
+        raise HTTPException(status_code=400, detail=MSG_PROMPT_SEM_JOB)
+    row = salvar_prompt(db, projeto, body.template, jd)
     return {
         "promptId": row.prompt_id,
         "versao": row.versao,
         "template": row.template,
         "criteriosQualitativosVersaoId": row.criterios_qualitativos_versao_id,
+        "jobDescriptionVersaoId": row.job_description_versao_id,
+        "jobDescriptionSnapshot": row.job_description_snapshot,
         "criadoEm": row.criado_em.isoformat() if row.criado_em else None,
     }
 
@@ -185,10 +202,6 @@ def post_preview(projeto_id: str, body: PreviewIn, db: Session = Depends(get_db)
     projeto = _exige(db, projeto_id)
     vigente = prompt_vigente(db, projeto)
     template = vigente.template if vigente else TEMPLATE_INICIAL
-    itens = (vigente.criterios_embutidos_snapshot if vigente else None) or []
-    if not itens:
-        qual = criterios_qual_vigentes(db, projeto.id)
-        itens = [] if qual is None else qual.itens
     candidatos = [candidato_para_dict(c) for c in listar_candidatos(db, projeto.id)]
     decisoes = decisoes_por_candidato(db, projeto.id)
     elegiveis = [
@@ -203,7 +216,14 @@ def post_preview(projeto_id: str, body: PreviewIn, db: Session = Depends(get_db)
             "mensagem": "Não há candidato com resposta utilizável para montar o texto.",
         }
     escolhido = next((c for c in elegiveis if c["candidatoId"] == body.candidatoId), elegiveis[0])
-    texto = montar_preview(template, escolhido["candidatoId"], itens, escolhido.get("respostasChatbot") or [])
+    jd = job_description_vigente(db, projeto.id)
+    texto_jd = "" if jd is None else jd.texto
+    texto = montar_preview(
+        template,
+        escolhido["candidatoId"],
+        escolhido.get("respostasChatbot") or [],
+        texto_jd,
+    )
     return {
         "candidatoId": escolhido["candidatoId"],
         "texto": texto,
@@ -211,6 +231,56 @@ def post_preview(projeto_id: str, body: PreviewIn, db: Session = Depends(get_db)
             {"candidatoId": c["candidatoId"], "nomeExibicao": c.get("nomeExibicao"), "linhaOrigem": c["linhaOrigem"]}
             for c in elegiveis
         ],
+    }
+
+
+def _por_pergunta_publico(avaliacao) -> list[dict] | None:
+    bruto = avaliacao.por_pergunta
+    if bruto is None:
+        return None
+    trechos = {
+        item.get("perguntaId"): item.get("trecho") or ""
+        for item in (avaliacao.trechos or [])
+        if isinstance(item, dict)
+    }
+    saida = []
+    for item in bruto:
+        if not isinstance(item, dict):
+            continue
+        resultado = item.get("resultado") or ""
+        saida.append(
+            {
+                "perguntaId": item.get("perguntaId"),
+                "pergunta": item.get("pergunta"),
+                "resultado": resultado,
+                "justificativa": item.get("justificativa") or "",
+                "trecho": trechos.get(item.get("perguntaId"), ""),
+                "rotulo": rotulo_resultado(resultado),
+            }
+        )
+    return saida
+
+
+def _avaliacao_publica(avaliacao) -> dict:
+    por_pergunta = _por_pergunta_publico(avaliacao)
+    schema_novo = por_pergunta is not None
+    return {
+        "promptVersionId": avaliacao.prompt_version_id,
+        "jobDescriptionVersaoId": avaliacao.job_description_versao_id,
+        "perfil": avaliacao.perfil,
+        "compatibilidade": None if schema_novo else avaliacao.compatibilidade,
+        "justificativasPorCriterio": None if schema_novo else avaliacao.justificativas_por_criterio,
+        "porPergunta": por_pergunta,
+        "trechos": avaliacao.trechos if schema_novo else None,
+        "notaTecnica": avaliacao.nota_tecnica if schema_novo else None,
+        "notaComportamental": avaliacao.nota_comportamental if schema_novo else None,
+        "justificativaNotaTecnica": avaliacao.justificativa_nota_tecnica if schema_novo else None,
+        "justificativaNotaComportamental": avaliacao.justificativa_nota_comportamental if schema_novo else None,
+        "schema": "por_pergunta" if schema_novo else "legado",
+        "usoToken": avaliacao.uso_token,
+        "estado": avaliacao.estado,
+        "erro": avaliacao.erro,
+        "criadoEm": avaliacao.criado_em.isoformat() if avaliacao.criado_em else None,
     }
 
 
@@ -238,33 +308,67 @@ def _envelope(cand: dict, decisao, avaliacao) -> dict:
         return {**base, "resultadoExibicao": "aguardando_resposta", "decisao": d, "avaliacao": None}
     if avaliacao is None:
         return {**base, "resultadoExibicao": "elegivel_pendente_ia", "decisao": d, "avaliacao": None}
-    av = {
-        "promptVersionId": avaliacao.prompt_version_id,
-        "criteriosQualitativosVersaoId": avaliacao.criterios_qualitativos_versao_id,
-        "perfil": avaliacao.perfil,
-        "compatibilidade": avaliacao.compatibilidade,
-        "justificativasPorCriterio": avaliacao.justificativas_por_criterio,
-        "usoToken": avaliacao.uso_token,
-        "estado": avaliacao.estado,
-        "erro": avaliacao.erro,
-        "criadoEm": avaliacao.criado_em.isoformat() if avaliacao.criado_em else None,
-    }
+    av = _avaliacao_publica(avaliacao)
     if avaliacao.estado == "sucesso":
         return {**base, "resultadoExibicao": "avaliado", "decisao": d, "avaliacao": av}
     return {**base, "resultadoExibicao": "falha_avaliacao", "decisao": d, "avaliacao": av}
 
 
+def _entrada_ranking(cand: dict, avaliacao) -> dict | None:
+    if avaliacao is None or avaliacao.estado != "sucesso" or avaliacao.por_pergunta is None:
+        return None
+    if avaliacao.nota_tecnica is None or avaliacao.nota_comportamental is None:
+        return None
+    final = avaliacao.nota_final
+    if final is None:
+        final = media_meio_para_cima(avaliacao.nota_tecnica, avaliacao.nota_comportamental)
+    return {
+        "candidatoId": cand["candidatoId"],
+        "linhaOrigem": cand["linhaOrigem"],
+        "notaTecnica": avaliacao.nota_tecnica,
+        "notaComportamental": avaliacao.nota_comportamental,
+        "notaFinal": final,
+        "zerada": bool(avaliacao.nota_tecnica_zerada_por_falta_de_informacao),
+    }
+
+
+def _linhas_resultado(db: Session, projeto_id: str) -> list[dict]:
+    candidatos = [candidato_para_dict(c) for c in listar_candidatos(db, projeto_id)]
+    decisoes = decisoes_por_candidato(db, projeto_id)
+    pares = []
+    entradas = []
+    for cand in candidatos:
+        av = avaliacao_mais_recente(db, projeto_id, cand["candidatoId"])
+        pares.append((cand, decisoes.get(cand["candidatoId"]), av))
+        entrada = _entrada_ranking(cand, av)
+        if entrada is not None:
+            entradas.append(entrada)
+    posicoes = atribuir_posicoes(entradas)
+    final_por_id = {item["candidatoId"]: item["notaFinal"] for item in entradas}
+    zerada_por_id = {item["candidatoId"]: item["zerada"] for item in entradas}
+    total = len(entradas)
+    linhas = []
+    for cand, decisao, av in pares:
+        linha = _envelope(cand, decisao, av)
+        cid = cand["candidatoId"]
+        pos = posicoes.get(cid)
+        linha["ranking"] = {
+            "notaFinal": final_por_id.get(cid),
+            "notaTecnicaZeradaPorFaltaDeInformacao": bool(zerada_por_id.get(cid, False)),
+            "posicaoTecnica": None if pos is None else pos["posicaoTecnica"],
+            "posicaoComportamental": None if pos is None else pos["posicaoComportamental"],
+            "posicaoFinal": None if pos is None else pos["posicaoFinal"],
+            "totalComNota": total,
+        }
+        linhas.append(linha)
+    return linhas
+
+
 @router.get("/{projeto_id}/resultado")
 def get_resultado(projeto_id: str, db: Session = Depends(get_db)):
     projeto = _exige(db, projeto_id)
-    candidatos = [candidato_para_dict(c) for c in listar_candidatos(db, projeto.id)]
-    decisoes = decisoes_por_candidato(db, projeto.id)
-    linhas = []
-    for cand in candidatos:
-        av = avaliacao_mais_recente(db, projeto.id, cand["candidatoId"])
-        linhas.append(_envelope(cand, decisoes.get(cand["candidatoId"]), av))
     return {
-        "linhas": linhas,
+        "linhas": _linhas_resultado(db, projeto.id),
         "pedidoTrajetoria": PEDIDO_TRAJETORIA,
         "llm": {
             "configurada": config.llm_configurada(),
@@ -272,6 +376,37 @@ def get_resultado(projeto_id: str, db: Session = Depends(get_db)):
             "baseUrlDefinida": bool(config.llm_base_url()),
         },
     }
+
+
+@router.get("/{projeto_id}/resultado/exportar")
+def exportar_resultado(
+    projeto_id: str,
+    so_com_nota: bool = Query(False, alias="soComNota"),
+    db: Session = Depends(get_db),
+):
+    projeto = _exige(db, projeto_id)
+    candidatos = listar_candidatos(db, projeto.id)
+    if not candidatos:
+        raise HTTPException(status_code=400, detail="Importe uma planilha antes de exportar o resultado.")
+    linhas = _linhas_resultado(db, projeto.id)
+    if so_com_nota:
+        linhas = [linha for linha in linhas if (linha.get("ranking") or {}).get("posicaoFinal") is not None]
+    contatos = {
+        cand.candidato_id: {
+            "nome": cand.nome_exibicao or "",
+            "email": cand.email or "",
+            "telefone": cand.telefone or "",
+        }
+        for cand in candidatos
+    }
+    conteudo = planilha_resultado(linhas, contatos)
+    nome = "".join(ch if ch.isalnum() or ch in " -_" else "_" for ch in projeto.nome).strip() or "resultado"
+    arquivo = f"resultado-{nome}.xlsx"
+    return Response(
+        content=conteudo,
+        media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        headers={"Content-Disposition": f"attachment; filename*=UTF-8''{quote(arquivo)}"},
+    )
 
 
 @router.get("/{projeto_id}/avaliacao-ia/lote")
@@ -286,22 +421,22 @@ def get_lote(projeto_id: str, db: Session = Depends(get_db)):
         selecionavel = env["resultadoExibicao"] in {"elegivel_pendente_ia", "avaliado", "falha_avaliacao"}
         linhas.append({**env, "selecionavel": selecionavel, "incluidoPadrao": selecionavel})
     vigente = prompt_vigente(db, projeto)
-    qual = criterios_qual_vigentes(db, projeto.id)
     faltas: list[str] = []
     mapa = projeto.mapeamento_colunas or {}
     if not (mapa.get("respostasChatbot") or []):
         faltas.append(
             "Mapeie ao menos uma coluna de resposta do chatbot na importação. Sem esse mapeamento a avaliação por IA não roda."
         )
-    if qual is None or not qual.itens:
-        faltas.append("Cadastre ao menos um critério qualitativo da vaga.")
     if vigente is None:
         faltas.append("Salve um prompt do projeto antes de avaliar.")
-    elif qual is not None and vigente.criterios_qualitativos_versao_id != qual.id:
-        faltas.append(
-            "Os critérios qualitativos mudaram desde a última versão salva do prompt. "
-            "Salve o prompt para gerar uma versão com os critérios atuais antes de avaliar."
-        )
+    else:
+        erro_template = validar_template(vigente.template or "")
+        if erro_template:
+            faltas.append(erro_template)
+        jd = job_description_vigente(db, projeto.id)
+        jd_id = None if jd is None else jd.id
+        if not jd_id or vigente.job_description_versao_id != jd_id or not (vigente.job_description_snapshot or "").strip():
+            faltas.append(MSG_JOB_DESCRIPTION_DESALINHADA)
     if not config.llm_configurada():
         faltas.append(
             "A avaliação por IA não está configurada. Defina as variáveis de ambiente do modelo "
@@ -343,11 +478,9 @@ def post_avaliar(projeto_id: str, body: AvaliarIn, db: Session = Depends(get_db)
         for cid, row in decisoes_rows.items()
     }
     vigente = prompt_vigente(db, projeto)
-    qual = criterios_qual_vigentes(db, projeto.id)
+    jd = job_description_vigente(db, projeto.id)
     if vigente is None:
         raise HTTPException(status_code=400, detail="Salve um prompt do projeto antes de avaliar.")
-    if qual is None:
-        raise HTTPException(status_code=400, detail="Cadastre ao menos um critério qualitativo da vaga.")
     try:
         saida = avaliar_lote(
             candidatos_por_id=candidatos,
@@ -355,10 +488,10 @@ def post_avaliar(projeto_id: str, body: AvaliarIn, db: Session = Depends(get_db)
             ids_selecionados=body.candidatoIds,
             template=vigente.template,
             prompt_id=vigente.prompt_id,
-            criterios_prompt_versao_id=vigente.criterios_qualitativos_versao_id,
-            criterios_vigente_id=qual.id,
-            itens_embutidos=vigente.criterios_embutidos_snapshot,
             mapeamento=projeto.mapeamento_colunas,
+            job_description_snapshot=vigente.job_description_snapshot or "",
+            job_description_versao_id=vigente.job_description_versao_id,
+            job_description_vigente_id=None if jd is None else jd.id,
         )
     except RecusaLote as exc:
         raise HTTPException(status_code=400, detail=exc.mensagem) from exc

@@ -1,5 +1,6 @@
 export type CriteriosDet = {
-  cargos: { ativo: boolean; aceitos: string[] };
+  cargos: { ativo: boolean; aceitos: string[]; bloqueados: string[] };
+  empresas: { ativo: boolean; bloqueadas: string[] };
   idade: { ativo: boolean; minima: number | null; maxima: number | null };
   escolaridade: {
     ativo: boolean;
@@ -24,6 +25,7 @@ export type Mapeamento = {
   ultimoCargo: string | null;
   idade: string | null;
   escolaridade: string | null;
+  empresa: string | null;
   nomeExibicao: string | null;
   respostasChatbot: string[];
   cidade: string | null;
@@ -58,6 +60,7 @@ export type Envelope = {
   } | null;
   avaliacao: {
     promptVersionId: string;
+    jobDescriptionVersaoId?: string | null;
     perfil: string | null;
     compatibilidade: string | null;
     justificativasPorCriterio: Array<{
@@ -71,7 +74,28 @@ export type Envelope = {
     estado: string;
     erro: { codigo: string; mensagem: string } | null;
     criadoEm: string | null;
+    schema?: "por_pergunta" | "legado";
+    porPergunta?: Array<{
+      perguntaId: string;
+      pergunta: string;
+      resultado: string;
+      justificativa: string;
+      trecho: string;
+      rotulo: string;
+    }> | null;
+    notaTecnica?: number | null;
+    notaComportamental?: number | null;
+    justificativaNotaTecnica?: string | null;
+    justificativaNotaComportamental?: string | null;
   } | null;
+  ranking?: {
+    notaFinal: number | null;
+    notaTecnicaZeradaPorFaltaDeInformacao: boolean;
+    posicaoTecnica: number | null;
+    posicaoComportamental: number | null;
+    posicaoFinal: number | null;
+    totalComNota: number;
+  };
 };
 
 export type ItemQual = {

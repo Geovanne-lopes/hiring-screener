@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from datetime import datetime
 
-from sqlalchemy import DateTime, ForeignKey, Integer, String, Text
+from sqlalchemy import Boolean, DateTime, ForeignKey, Integer, String, Text
 from sqlalchemy.orm import Mapped, mapped_column
 from sqlalchemy.types import JSON
 
@@ -24,6 +24,7 @@ class Projeto(Base):
     prompt_vigente_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
     criterios_det_vigente_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
     criterios_qual_vigente_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    job_description_vigente_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
 
 
 class CriteriosDeterministicosVersao(Base):
@@ -44,6 +45,7 @@ class CandidatoImportado(Base):
     ultimo_cargo: Mapped[str | None] = mapped_column(Text, nullable=True)
     idade: Mapped[str | None] = mapped_column(Text, nullable=True)
     escolaridade: Mapped[str | None] = mapped_column(Text, nullable=True)
+    empresa: Mapped[str | None] = mapped_column(Text, nullable=True)
     nome_exibicao: Mapped[str | None] = mapped_column(Text, nullable=True)
     telefone: Mapped[str | None] = mapped_column(Text, nullable=True)
     email: Mapped[str | None] = mapped_column(Text, nullable=True)
@@ -83,6 +85,18 @@ class PromptDoProjeto(Base):
     template: Mapped[str] = mapped_column(Text, nullable=False)
     criterios_qualitativos_versao_id: Mapped[str] = mapped_column(String(64), nullable=False)
     criterios_embutidos_snapshot: Mapped[list] = mapped_column(JSON, nullable=False)
+    job_description_versao_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    job_description_snapshot: Mapped[str | None] = mapped_column(Text, nullable=True)
+    criado_em: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=agora)
+
+
+class JobDescriptionVersao(Base):
+    __tablename__ = "job_descriptions"
+
+    id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    versao: Mapped[int] = mapped_column(Integer, nullable=False)
+    projeto_id: Mapped[str] = mapped_column(ForeignKey("projetos.id"), nullable=False, index=True)
+    texto: Mapped[str] = mapped_column(Text, nullable=False)
     criado_em: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=agora)
 
 
@@ -94,9 +108,18 @@ class AvaliacaoIa(Base):
     projeto_id: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
     prompt_version_id: Mapped[str] = mapped_column(String(64), nullable=False)
     criterios_qualitativos_versao_id: Mapped[str] = mapped_column(String(64), nullable=False)
+    job_description_versao_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
     perfil: Mapped[str | None] = mapped_column(Text, nullable=True)
     compatibilidade: Mapped[str | None] = mapped_column(String(32), nullable=True)
     justificativas_por_criterio: Mapped[list | None] = mapped_column(JSON, nullable=True)
+    por_pergunta: Mapped[list | None] = mapped_column(JSON, nullable=True)
+    trechos: Mapped[list | None] = mapped_column(JSON, nullable=True)
+    nota_tecnica: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    nota_comportamental: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    justificativa_nota_tecnica: Mapped[str | None] = mapped_column(Text, nullable=True)
+    justificativa_nota_comportamental: Mapped[str | None] = mapped_column(Text, nullable=True)
+    nota_final: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    nota_tecnica_zerada_por_falta_de_informacao: Mapped[bool | None] = mapped_column(Boolean, nullable=True)
     uso_token: Mapped[dict | None] = mapped_column(JSON, nullable=True)
     estado: Mapped[str] = mapped_column(String(32), nullable=False)
     erro: Mapped[dict | None] = mapped_column(JSON, nullable=True)

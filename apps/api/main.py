@@ -2,7 +2,7 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from persistencia.db import init_db
-from routers import avaliacao, importacao, projetos, triagem
+from routers import avaliacao, importacao, job_description, projetos, triagem
 
 app = FastAPI(title="Screener", version="0.1.0")
 app.add_middleware(
@@ -15,6 +15,7 @@ app.add_middleware(
 app.include_router(projetos.router)
 app.include_router(importacao.router)
 app.include_router(triagem.router)
+app.include_router(job_description.router)
 app.include_router(avaliacao.router)
 
 

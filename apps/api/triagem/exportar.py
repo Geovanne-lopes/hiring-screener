@@ -9,7 +9,6 @@ from persistencia.models import CandidatoImportado, DecisaoTriagem
 COLUNAS = [
     "Linha",
     "Nome",
-    "Busca LKD",
     "Email",
     "Telefone",
     "Cargo",
@@ -18,6 +17,7 @@ COLUNAS = [
     "Decisão",
     "Motivos",
     "Critérios não aplicados",
+    "Empresa",
 ]
 
 _ROTULO = {
@@ -47,7 +47,6 @@ def linhas_exportacao(
             [
                 cand.linha_origem,
                 cand.nome_exibicao or "",
-                cand.busca_lkd or "",
                 cand.email or "",
                 cand.telefone or "",
                 cand.ultimo_cargo or "",
@@ -56,6 +55,7 @@ def linhas_exportacao(
                 rotulo,
                 motivos,
                 inativos,
+                getattr(cand, "empresa", None) or "",
             ]
         )
     return linhas

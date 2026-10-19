@@ -5,10 +5,25 @@ from typing import Any
 
 from texto_util import colapsar_espacos, texto_apos_strip_e_espaco
 
-from avaliacao_ia.prompt import formatar_respostas
+from avaliacao_ia.resposta import pares_da_linha
 
 RESULTADOS_OK = {"atende", "atende_parcialmente", "nao_atende", "sem_informacao"}
-COMPAT_MODELO = {"compativel", "parcial", "incompativel"}
+CHAVES_OBJETO = {
+    "perfil",
+    "por_pergunta",
+    "trechos",
+    "nota_tecnica",
+    "nota_comportamental",
+    "justificativa_nota_tecnica",
+    "justificativa_nota_comportamental",
+}
+FRASE_ZERAMENTO_TECNICO = (
+    "A nota técnica foi zerada porque nenhuma resposta trouxe informação "
+    "para cruzar com a pergunta e a job description."
+)
+CHAVES_PERGUNTA = {"perguntaId", "pergunta", "resultado", "justificativa"}
+CHAVES_TRECHO = {"perguntaId", "trecho"}
+ROTULO_SEM_INFORMACAO = "sem informação para julgar esta pergunta"
 
 
 class ErroValidacaoJson(ValueError):
@@ -16,6 +31,12 @@ class ErroValidacaoJson(ValueError):
         super().__init__(mensagem)
         self.codigo = codigo
         self.mensagem = mensagem
+
+
+def rotulo_resultado(resultado: str) -> str:
+    if resultado == "sem_informacao":
+        return ROTULO_SEM_INFORMACAO
+    return resultado
 
 
 def _sem_cerca(texto: str) -> str:
@@ -54,86 +75,126 @@ def _substring_colapsada(agulha: str, palheiro: str) -> bool:
     return a in p if a else False
 
 
-def validar_saida_modelo(
-    corpo: str,
-    itens_embutidos: list[dict],
-    respostas: list[dict],
-) -> dict[str, Any]:
+def _nota(valor: object, nome: str) -> int:
+    if isinstance(valor, bool) or not isinstance(valor, int) or valor < 0 or valor > 100:
+        raise ErroValidacaoJson("json_invalido", f"{nome} ausente ou fora de 0 a 100.")
+    return valor
+
+
+def _justificativa_nota(valor: object, nome: str) -> str:
+    if not isinstance(valor, str) or texto_apos_strip_e_espaco(valor) == "":
+        raise ErroValidacaoJson("json_invalido", f"{nome} ausente ou vazia.")
+    return valor
+
+
+def _objeto_json(texto: str) -> dict | None:
+    bruto = texto.strip()
+    if not bruto.startswith("{"):
+        return None
+    try:
+        carregado = json.loads(bruto)
+    except json.JSONDecodeError:
+        return None
+    return carregado if isinstance(carregado, dict) else None
+
+
+def _objeto_da_lista(item: object, lista: str, indice: int) -> dict:
+    if isinstance(item, dict):
+        return item
+    if isinstance(item, str):
+        carregado = _objeto_json(item)
+        if carregado is not None:
+            return carregado
+    if isinstance(item, list) and len(item) == 1 and isinstance(item[0], dict):
+        return item[0]
+    raise ErroValidacaoJson("json_invalido", f"Item {indice} de {lista} não é um objeto.")
+
+
+def _objeto_trecho(item: object, julgamento: dict, pergunta_id: str, indice: int) -> dict:
+    if isinstance(item, str) and _objeto_json(item) is None:
+        return {"perguntaId": pergunta_id, "trecho": item}
+    if item is None and isinstance(julgamento.get("trecho"), str):
+        return {"perguntaId": pergunta_id, "trecho": julgamento["trecho"]}
+    return _objeto_da_lista(item, "trechos", indice)
+
+
+def validar_saida_modelo(corpo: str, respostas: list[dict]) -> dict[str, Any]:
     dados = _parse_objeto(corpo)
-    for chave in ("perfil", "compatibilidade", "por_criterio", "trechos"):
-        if chave not in dados:
-            raise ErroValidacaoJson("json_invalido", f"Falta a chave {chave}.")
+    chaves = set(dados.keys())
+    if chaves != CHAVES_OBJETO:
+        faltando = sorted(CHAVES_OBJETO - chaves)
+        if faltando:
+            raise ErroValidacaoJson("json_invalido", "Chave ausente: " + ", ".join(faltando) + ".")
+        raise ErroValidacaoJson("json_invalido", "O JSON não tem exatamente as chaves exigidas.")
 
-    perfil = texto_apos_strip_e_espaco(dados.get("perfil"))
-    if not perfil or len(perfil) > 2000:
-        raise ErroValidacaoJson("json_invalido", "perfil vazio ou acima de 2000 caracteres.")
+    perfil = dados.get("perfil")
+    if not isinstance(perfil, str):
+        raise ErroValidacaoJson("json_invalido", "perfil inválido.")
 
-    compat = dados.get("compatibilidade")
-    if compat not in COMPAT_MODELO:
-        raise ErroValidacaoJson("json_invalido", "compatibilidade do modelo inválida.")
-
-    por_criterio = dados.get("por_criterio")
+    por_pergunta = dados.get("por_pergunta")
     trechos = dados.get("trechos")
-    if not isinstance(por_criterio, list) or not isinstance(trechos, list):
-        raise ErroValidacaoJson("json_invalido", "por_criterio e trechos devem ser listas.")
+    if not isinstance(por_pergunta, list) or not isinstance(trechos, list):
+        raise ErroValidacaoJson("json_invalido", "por_pergunta e trechos devem ser listas.")
 
-    ordenados = sorted(itens_embutidos, key=lambda x: int(x.get("ordem") or 0))
-    if len(por_criterio) != len(ordenados) or len(trechos) != len(ordenados):
-        raise ErroValidacaoJson("json_invalido", "por_criterio não corresponde aos critérios configurados.")
+    enviados = pares_da_linha(respostas)
+    if len(por_pergunta) != len(enviados) or len(trechos) != len(enviados):
+        raise ErroValidacaoJson("json_invalido", "A lista não corresponde às perguntas enviadas.")
 
-    ids_esperados = [i["criterioId"] for i in ordenados]
-    nomes = {i["criterioId"]: i["nome"] for i in ordenados}
-    enviado = formatar_respostas(respostas)
+    nota_tecnica = _nota(dados.get("nota_tecnica"), "nota_tecnica")
+    nota_comportamental = _nota(dados.get("nota_comportamental"), "nota_comportamental")
+    justificativa_nota_tecnica = _justificativa_nota(
+        dados.get("justificativa_nota_tecnica"), "justificativa_nota_tecnica"
+    )
+    justificativa_nota_comportamental = _justificativa_nota(
+        dados.get("justificativa_nota_comportamental"), "justificativa_nota_comportamental"
+    )
 
-    justificativas: list[dict] = []
-    for esperado, julgamento, trecho_item in zip(ordenados, por_criterio, trechos, strict=True):
-        if not isinstance(julgamento, dict) or not isinstance(trecho_item, dict):
-            raise ErroValidacaoJson("json_invalido", "Item de por_criterio ou trechos inválido.")
-        cid = julgamento.get("criterioId")
-        if cid != esperado["criterioId"] or trecho_item.get("criterioId") != cid:
-            raise ErroValidacaoJson(
-                "json_invalido",
-                "criterioId desconhecido ou fora de ordem. "
-                f"Use exatamente {esperado['criterioId']} para {esperado['nome']}.",
-            )
-        if cid not in ids_esperados:
-            raise ErroValidacaoJson("json_invalido", "criterioId desconhecido.")
-        if julgamento.get("nome") != nomes[cid] or trecho_item.get("nome") != nomes[cid]:
-            raise ErroValidacaoJson("json_invalido", "nome do critério não coincide com a versão.")
+    julgamentos: list[dict] = []
+    trechos_ok: list[dict] = []
+    for indice, (esperado, julgamento, trecho_item) in enumerate(
+        zip(enviados, por_pergunta, trechos, strict=True), start=1
+    ):
+        julgamento = _objeto_da_lista(julgamento, "por_pergunta", indice)
+        trecho_item = _objeto_trecho(trecho_item, julgamento, esperado["perguntaId"], indice)
+        if not CHAVES_PERGUNTA <= set(julgamento.keys()) or not CHAVES_TRECHO <= set(trecho_item.keys()):
+            raise ErroValidacaoJson("json_invalido", "Chave ausente no item da pergunta.")
+        if julgamento.get("perguntaId") != esperado["perguntaId"] or trecho_item.get("perguntaId") != esperado["perguntaId"]:
+            raise ErroValidacaoJson("json_invalido", "perguntaId trocado ou fora de ordem.")
+        if julgamento.get("pergunta") != esperado["pergunta"]:
+            raise ErroValidacaoJson("json_invalido", "A pergunta não coincide com o cabeçalho enviado.")
         resultado = julgamento.get("resultado")
         if resultado not in RESULTADOS_OK:
             raise ErroValidacaoJson("json_invalido", "resultado inválido.")
+        justificativa = julgamento.get("justificativa")
+        if not isinstance(justificativa, str) or texto_apos_strip_e_espaco(justificativa) == "":
+            raise ErroValidacaoJson("json_invalido", "justificativa vazia.")
         trecho = trecho_item.get("trecho")
-        if trecho is None:
-            trecho = ""
         if not isinstance(trecho, str):
             raise ErroValidacaoJson("json_invalido", "trecho inválido.")
-        justificativa = julgamento.get("justificativa") or ""
         if resultado == "sem_informacao":
             if trecho != "":
                 raise ErroValidacaoJson("json_invalido", "sem_informacao exige trecho vazio.")
         else:
             if texto_apos_strip_e_espaco(trecho) == "":
                 raise ErroValidacaoJson("json_invalido", "trecho obrigatório quando há julgamento informado.")
-            if not _substring_colapsada(trecho, enviado):
-                raise ErroValidacaoJson("trecho_nao_encontrado", "Trecho não aparece nas respostas enviadas.")
-            if not isinstance(justificativa, str):
-                justificativa = str(justificativa)
-            if not _substring_colapsada(trecho, justificativa):
-                justificativa = f"{justificativa} {trecho}".strip()
-        justificativas.append(
+            if not _substring_colapsada(trecho, esperado["texto"]):
+                raise ErroValidacaoJson("trecho_nao_encontrado", "Trecho não aparece na resposta da pergunta.")
+        julgamentos.append(
             {
-                "criterioId": cid,
-                "nome": nomes[cid],
+                "perguntaId": esperado["perguntaId"],
+                "pergunta": esperado["pergunta"],
                 "resultado": resultado,
                 "justificativa": justificativa,
-                "trecho": trecho,
             }
         )
+        trechos_ok.append({"perguntaId": esperado["perguntaId"], "trecho": trecho})
 
     return {
         "perfil": perfil,
-        "compatibilidadeModelo": compat,
-        "por_criterio": por_criterio,
-        "justificativasPorCriterio": justificativas,
+        "por_pergunta": julgamentos,
+        "trechos": trechos_ok,
+        "nota_tecnica": nota_tecnica,
+        "nota_comportamental": nota_comportamental,
+        "justificativa_nota_tecnica": justificativa_nota_tecnica,
+        "justificativa_nota_comportamental": justificativa_nota_comportamental,
     }

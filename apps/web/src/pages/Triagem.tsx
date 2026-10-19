@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 import { useParams } from "react-router-dom";
 import { apiGet, apiSend } from "../api";
+import { idadeComparada, palavrasComparadas } from "../comparacao";
 
 type Linha = {
   candidatoId: string;
@@ -9,6 +10,7 @@ type Linha = {
   ultimoCargo: string | null;
   idade: string | null;
   escolaridade: string | null;
+  empresa: string | null;
   decisao: {
     resultado: string;
     motivos: Array<{
@@ -21,15 +23,6 @@ type Linha = {
     criteriosInativos: string[];
   } | null;
 };
-
-function comparado(texto: string) {
-  return texto
-    .trim()
-    .replace(/\s+/g, " ")
-    .normalize("NFKD")
-    .replace(/\p{M}/gu, "")
-    .toLowerCase();
-}
 
 export default function Triagem() {
   const { projetoId } = useParams();
@@ -142,15 +135,24 @@ export default function Triagem() {
                 <td>
                   {l.ultimoCargo != null && (
                     <div>
-                      cargo: {l.ultimoCargo} → {comparado(l.ultimoCargo)}
+                      cargo: {l.ultimoCargo} → {palavrasComparadas(l.ultimoCargo).join(" ")}
+                    </div>
+                  )}
+                  {l.empresa != null && l.empresa !== "" && (
+                    <div>
+                      empresa: {l.empresa} → {palavrasComparadas(l.empresa).join(" ")}
                     </div>
                   )}
                   {l.escolaridade != null && (
                     <div>
-                      escolaridade: {l.escolaridade} → {comparado(l.escolaridade)}
+                      escolaridade: {l.escolaridade} → {palavrasComparadas(l.escolaridade).join(" ")}
                     </div>
                   )}
-                  {l.idade != null && <div>idade lida: {l.idade}</div>}
+                  {l.idade != null && (
+                    <div>
+                      idade: {l.idade} → {idadeComparada(l.idade) ?? "inválida"}
+                    </div>
+                  )}
                 </td>
                 <td>
                   {(l.decisao?.criteriosInativos || []).map((n) => (

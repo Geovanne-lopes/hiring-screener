@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import io
+import re
 from typing import Any
 
 import pandas as pd
@@ -13,6 +14,11 @@ MSG_SEM_CANDIDATOS = "O arquivo não contém linhas de candidato."
 MSG_UTF8_INVALIDO = (
     "O arquivo não é UTF-8 válido. Tente o encoding latin-1 (caso típico do mapeamento legado)."
 )
+MSG_COLUNA_RESPOSTA_SEM_NOME = (
+    "A coluna de resposta precisa de um nome, porque esse nome é a pergunta."
+)
+
+_UNNAMED = re.compile(r"^Unnamed: \d+$")
 
 
 class ErroImportacao(ValueError):
@@ -55,6 +61,27 @@ def sugerir_ultimo_cargo(colunas: list[str]) -> str | None:
     return None
 
 
+def sugerir_empresa(colunas: list[str]) -> str | None:
+    """Sugere Empresa se existir e o operador ainda não escolheu outra."""
+    for col in colunas:
+        if str(col).strip() == "Empresa":
+            return col
+    return None
+
+
+def nome_cabecalho(col: object) -> str:
+    texto = "" if col is None else str(col).strip()
+    if _UNNAMED.fullmatch(texto):
+        return ""
+    return texto
+
+
+def ajustar_cabecalhos(df: pd.DataFrame) -> pd.DataFrame:
+    ajustado = df.copy()
+    ajustado.columns = [nome_cabecalho(col) for col in df.columns]
+    return ajustado
+
+
 def _celula_texto(valor: object) -> str:
     if valor is None:
         return ""
@@ -94,7 +121,7 @@ def _dataframe_de_bytes(conteudo: bytes, nome_arquivo: str, encoding: str) -> pd
 def previsualizar(conteudo: bytes, nome_arquivo: str, encoding: str) -> dict[str, Any]:
     if not conteudo:
         raise ErroImportacao(MSG_ARQUIVO_AUSENTE)
-    df = _dataframe_de_bytes(conteudo, nome_arquivo, encoding)
+    df = ajustar_cabecalhos(_dataframe_de_bytes(conteudo, nome_arquivo, encoding))
     colunas = [str(c) for c in df.columns.tolist()]
     linhas: list[dict[str, str]] = []
     for _, row in df.head(5).iterrows():
@@ -103,6 +130,7 @@ def previsualizar(conteudo: bytes, nome_arquivo: str, encoding: str) -> dict[str
         "colunas": colunas,
         "linhas": linhas,
         "sugestaoUltimoCargo": sugerir_ultimo_cargo(colunas),
+        "sugestaoEmpresa": sugerir_empresa(colunas),
         "encoding": encoding,
         "xlsx": nome_arquivo.lower().endswith((".xlsx", ".xlsm")),
     }
@@ -126,9 +154,12 @@ def confirmar_lote(
 ) -> list[dict[str, Any]]:
     if not conteudo:
         raise ErroImportacao(MSG_ARQUIVO_AUSENTE)
-    df = _dataframe_de_bytes(conteudo, nome_arquivo, encoding)
+    df = ajustar_cabecalhos(_dataframe_de_bytes(conteudo, nome_arquivo, encoding))
     df = df.reset_index(drop=True)
     colunas = [str(c) for c in df.columns.tolist()]
+    for col_resp in mapeamento.get("respostasChatbot") or []:
+        if nome_cabecalho(col_resp) == "":
+            raise ErroImportacao(MSG_COLUNA_RESPOSTA_SEM_NOME)
     contato = colunas_contato(colunas)
     candidatos: list[dict[str, Any]] = []
     for indice, row in df.iterrows():
@@ -138,9 +169,10 @@ def confirmar_lote(
             continue
         respostas: list[dict[str, str]] = []
         for col_resp in mapeamento.get("respostasChatbot") or []:
-            if not col_resp:
+            nome = nome_cabecalho(col_resp)
+            if not nome:
                 continue
-            respostas.append({"colunaMapeada": col_resp, "texto": _celula_texto(row.get(col_resp, ""))})
+            respostas.append({"colunaMapeada": nome, "texto": _celula_texto(row.get(nome, ""))})
         candidatos.append(
             {
                 "candidatoId": gerar_candidato_id(linha_origem, celulas),
@@ -149,6 +181,7 @@ def confirmar_lote(
                 "ultimoCargo": _valor_coluna(row, mapeamento.get("ultimoCargo")),
                 "idade": _valor_coluna(row, mapeamento.get("idade")),
                 "escolaridade": _valor_coluna(row, mapeamento.get("escolaridade")),
+                "empresa": _valor_coluna(row, mapeamento.get("empresa")),
                 "nomeExibicao": _valor_coluna(row, mapeamento.get("nomeExibicao")),
                 "telefone": _valor_coluna(row, contato.get("telefone")),
                 "email": _valor_coluna(row, contato.get("email")),

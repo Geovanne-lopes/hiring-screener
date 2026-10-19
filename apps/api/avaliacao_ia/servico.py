@@ -1,4 +1,4 @@
-"""Orquestra o lote da etapa 2. O código do cliente só roda para elegível com resposta."""
+"""Orquestra o lote da avaliação por pergunta. O cliente só roda para elegível com resposta."""
 
 from __future__ import annotations
 
@@ -6,15 +6,16 @@ from typing import Any, Callable
 
 import config
 from avaliacao_ia.cliente import ClienteLLM, ErroClienteLLM, cliente_padrao
-from avaliacao_ia.compatibilidade import calcular_compatibilidade
 from avaliacao_ia.prompt import (
     INSTRUCOES_TECNICAS,
-    MSG_CRITERIOS_DESALINHADOS,
-    interpolar,
+    MSG_JOB_DESCRIPTION_DESALINHADA,
     texto_preview,
+    texto_usuario,
+    validar_template,
 )
 from avaliacao_ia.resposta import resposta_utilizavel
-from avaliacao_ia.validacao import ErroValidacaoJson, validar_saida_modelo
+from avaliacao_ia.ranking import notas_para_gravar
+from avaliacao_ia.validacao import FRASE_ZERAMENTO_TECNICO, ErroValidacaoJson, validar_saida_modelo
 
 MSG_CONFIG_AUSENTE = (
     "A avaliação por IA não está configurada. Defina as variáveis de ambiente do modelo "
@@ -24,7 +25,6 @@ MSG_SEM_MAPEAMENTO = (
     "Mapeie ao menos uma coluna de resposta do chatbot na importação. "
     "Sem esse mapeamento a avaliação por IA não roda."
 )
-MSG_SEM_CRITERIOS = "Cadastre ao menos um critério qualitativo da vaga."
 MSG_SEM_PROMPT = "Salve um prompt do projeto antes de avaliar."
 MSG_N_ZERO = "Nenhum candidato elegível com resposta utilizável está selecionado para envio."
 FRASE_REPARO = (
@@ -44,8 +44,13 @@ def recusar_se_nao_configurado() -> None:
         raise RecusaLote(MSG_CONFIG_AUSENTE)
 
 
-def _mensagens(template: str, candidato_id: str, itens: list[dict], respostas: list[dict]) -> list[dict[str, str]]:
-    user = interpolar(template, candidato_id, itens, respostas)
+def _mensagens(
+    template: str,
+    candidato_id: str,
+    respostas: list[dict],
+    job_description: str,
+) -> list[dict[str, str]]:
+    user = texto_usuario(template, candidato_id, respostas, job_description)
     return [
         {"role": "system", "content": INSTRUCOES_TECNICAS},
         {"role": "user", "content": user},
@@ -55,10 +60,10 @@ def _mensagens(template: str, candidato_id: str, itens: list[dict], respostas: l
 def montar_preview(
     template: str,
     candidato_id: str,
-    itens: list[dict],
     respostas: list[dict],
+    job_description: str = "",
 ) -> str:
-    return texto_preview(template, candidato_id, itens, respostas)
+    return texto_preview(template, candidato_id, respostas, job_description)
 
 
 def _pode_enviar(decisao: dict | None, candidato: dict) -> bool:
@@ -74,10 +79,10 @@ def avaliar_lote(
     ids_selecionados: list[str],
     template: str,
     prompt_id: str,
-    criterios_prompt_versao_id: str,
-    criterios_vigente_id: str,
-    itens_embutidos: list[dict],
     mapeamento: dict | None,
+    job_description_snapshot: str,
+    job_description_versao_id: str | None,
+    job_description_vigente_id: str | None,
     cliente: ClienteLLM | None = None,
     obter_cliente: Callable[[], ClienteLLM] | None = None,
 ) -> dict[str, Any]:
@@ -85,12 +90,15 @@ def avaliar_lote(
     respostas_mapeadas = (mapeamento or {}).get("respostasChatbot") or []
     if not respostas_mapeadas:
         raise RecusaLote(MSG_SEM_MAPEAMENTO)
-    if not itens_embutidos:
-        raise RecusaLote(MSG_SEM_CRITERIOS)
     if not template.strip():
         raise RecusaLote(MSG_SEM_PROMPT)
-    if criterios_prompt_versao_id != criterios_vigente_id:
-        raise RecusaLote(MSG_CRITERIOS_DESALINHADOS)
+    erro_template = validar_template(template)
+    if erro_template:
+        raise RecusaLote(erro_template)
+    if not job_description_vigente_id or job_description_versao_id != job_description_vigente_id:
+        raise RecusaLote(MSG_JOB_DESCRIPTION_DESALINHADA)
+    if not (job_description_snapshot or "").strip():
+        raise RecusaLote(MSG_JOB_DESCRIPTION_DESALINHADA)
 
     a_enviar = [
         cid
@@ -110,8 +118,8 @@ def avaliar_lote(
             cand,
             template,
             prompt_id,
-            criterios_prompt_versao_id,
-            itens_embutidos,
+            job_description_snapshot,
+            job_description_versao_id,
         )
         resultados.append(resultado)
         if (resultado.get("erro") or {}).get("codigo") == "sem_credito":
@@ -137,12 +145,12 @@ def _avaliar_um(
     candidato: dict,
     template: str,
     prompt_id: str,
-    criterios_versao_id: str,
-    itens: list[dict],
+    job_description: str,
+    job_description_versao_id: str | None,
 ) -> dict[str, Any]:
     cid = candidato["candidatoId"]
     respostas = candidato.get("respostasChatbot") or []
-    mensagens = _mensagens(template, cid, itens, respostas)
+    mensagens = _mensagens(template, cid, respostas, job_description)
     tentativas_rede = 0
     houve_reparo = False
     uso = {"entrada": None, "saida": None, "total": None, "nota": "uso_nao_reportado"}
@@ -151,7 +159,7 @@ def _avaliar_um(
         tentativas_rede = int(primeira.get("tentativasRede") or 1)
         uso = _uso_de(primeira)
         try:
-            validado = validar_saida_modelo(primeira.get("conteudo") or "", itens, respostas)
+            validado = validar_saida_modelo(primeira.get("conteudo") or "", respostas)
         except ErroValidacaoJson as erro_json:
             houve_reparo = True
             json_rejeitado = primeira.get("conteudo") or ""
@@ -166,32 +174,54 @@ def _avaliar_um(
             tentativas_rede += int(segunda.get("tentativasRede") or 1)
             uso = _uso_de(segunda)
             try:
-                validado = validar_saida_modelo(segunda.get("conteudo") or "", itens, respostas)
+                validado = validar_saida_modelo(segunda.get("conteudo") or "", respostas)
             except ErroValidacaoJson as erro_reparo:
                 return _falha(
                     cid,
                     prompt_id,
-                    criterios_versao_id,
                     erro_reparo.codigo,
                     tentativas_rede,
                     houve_reparo,
                     uso,
+                    job_description_versao_id,
+                    detalhe=erro_reparo.mensagem,
                 )
     except ErroClienteLLM as erro:
-        falha = _falha(cid, prompt_id, criterios_versao_id, erro.codigo, tentativas_rede or 1, houve_reparo, uso)
+        falha = _falha(
+            cid,
+            prompt_id,
+            erro.codigo,
+            tentativas_rede or 1,
+            houve_reparo,
+            uso,
+            job_description_versao_id,
+        )
         if erro.mensagem:
             falha["erro"]["mensagem"] = erro.mensagem
         return falha
 
-    calculada = calcular_compatibilidade(validado["justificativasPorCriterio"], itens)
+    notas = notas_para_gravar(
+        validado["nota_tecnica"],
+        validado["nota_comportamental"],
+        validado["por_pergunta"],
+    )
+    justificativa_tecnica = validado["justificativa_nota_tecnica"]
+    if notas["notaTecnicaZeradaPorFaltaDeInformacao"]:
+        justificativa_tecnica = FRASE_ZERAMENTO_TECNICO
     return {
         "candidatoId": cid,
         "promptVersionId": prompt_id,
-        "criteriosQualitativosVersaoId": criterios_versao_id,
+        "jobDescriptionVersaoId": job_description_versao_id,
         "perfil": validado["perfil"],
-        "compatibilidade": calculada,
-        "compatibilidadeModelo": validado["compatibilidadeModelo"],
-        "justificativasPorCriterio": validado["justificativasPorCriterio"],
+        "compatibilidade": None,
+        "porPergunta": validado["por_pergunta"],
+        "trechos": validado["trechos"],
+        "notaTecnica": notas["notaTecnica"],
+        "notaComportamental": notas["notaComportamental"],
+        "notaFinal": notas["notaFinal"],
+        "justificativaNotaTecnica": justificativa_tecnica,
+        "justificativaNotaComportamental": validado["justificativa_nota_comportamental"],
+        "notaTecnicaZeradaPorFaltaDeInformacao": notas["notaTecnicaZeradaPorFaltaDeInformacao"],
         "usoToken": {
             "entrada": uso.get("entrada"),
             "saida": uso.get("saida"),
@@ -209,20 +239,30 @@ def _avaliar_um(
 def _falha(
     cid: str,
     prompt_id: str,
-    criterios_versao_id: str,
     codigo: str,
     tentativas: int,
     houve_reparo: bool,
     uso: dict,
+    job_description_versao_id: str | None,
+    detalhe: str | None = None,
 ) -> dict[str, Any]:
+    mensagem = _mensagem_erro(codigo)
+    if detalhe:
+        mensagem = f"{mensagem} {detalhe}"
     return {
         "candidatoId": cid,
         "promptVersionId": prompt_id,
-        "criteriosQualitativosVersaoId": criterios_versao_id,
+        "jobDescriptionVersaoId": job_description_versao_id,
         "perfil": None,
         "compatibilidade": None,
-        "compatibilidadeModelo": None,
-        "justificativasPorCriterio": None,
+        "porPergunta": None,
+        "trechos": None,
+        "notaTecnica": None,
+        "notaComportamental": None,
+        "notaFinal": None,
+        "justificativaNotaTecnica": None,
+        "justificativaNotaComportamental": None,
+        "notaTecnicaZeradaPorFaltaDeInformacao": False,
         "usoToken": {
             "entrada": uso.get("entrada"),
             "saida": uso.get("saida"),
@@ -230,7 +270,7 @@ def _falha(
         },
         "notaUso": uso.get("nota"),
         "estado": "falha_avaliacao",
-        "erro": {"codigo": codigo, "mensagem": _mensagem_erro(codigo)},
+        "erro": {"codigo": codigo, "mensagem": mensagem},
         "tentativasRede": tentativas,
         "houveReparoJson": houve_reparo,
         "statusChamada": codigo,
@@ -240,8 +280,7 @@ def _falha(
 def _mensagem_erro(codigo: str) -> str:
     mapa = {
         "json_invalido": "A resposta do modelo não passou na validação após o reparo.",
-        "trecho_nao_encontrado": "O trecho citado não aparece nas respostas enviadas.",
-        "justificativa_sem_trecho": "A justificativa não cita o trecho correspondente.",
+        "trecho_nao_encontrado": "O trecho citado não aparece na resposta da pergunta.",
         "timeout": "A chamada ao modelo esgotou o tempo limite.",
         "falha_rede": "Falha de rede ao chamar o modelo.",
         "sem_credito": "A conta do modelo está sem cota ou sem créditos. Troque a chave ou recarregue o saldo para avaliar.",

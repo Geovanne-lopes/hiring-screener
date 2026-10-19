@@ -2,9 +2,9 @@ import { NavLink, Outlet, useParams } from "react-router-dom";
 
 const passos = [
   { to: (id: string) => `/projetos/${id}/criterios`, label: "2. Critérios duros" },
-  { to: (id: string) => `/projetos/${id}/importar`, label: "3. Importar" },
-  { to: (id: string) => `/projetos/${id}/triagem`, label: "4. Triagem" },
-  { to: (id: string) => `/projetos/${id}/qualitativos`, label: "5. Critérios qualitativos" },
+  { to: (id: string) => `/projetos/${id}/job-description`, label: "3. Job description" },
+  { to: (id: string) => `/projetos/${id}/importar`, label: "4. Importar" },
+  { to: (id: string) => `/projetos/${id}/triagem`, label: "5. Triagem" },
   { to: (id: string) => `/projetos/${id}/prompt`, label: "6. Prompt" },
   { to: (id: string) => `/projetos/${id}/avaliacao`, label: "7. Avaliação IA" },
   { to: (id: string) => `/projetos/${id}/resultado`, label: "Resultado" },

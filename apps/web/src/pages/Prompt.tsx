@@ -14,6 +14,8 @@ export default function Prompt() {
   const { projetoId } = useParams();
   const [template, setTemplate] = useState("");
   const [inicial, setInicial] = useState("");
+  const [modeloRevisao, setModeloRevisao] = useState("");
+  const [templateAntigo, setTemplateAntigo] = useState(false);
   const [versoes, setVersoes] = useState<Versao[]>([]);
   const [preview, setPreview] = useState("");
   const [candId, setCandId] = useState("");
@@ -29,10 +31,14 @@ export default function Prompt() {
     apiGet<{
       vigente: { template: string } | null;
       templateInicial: string;
+      modeloRevisao: string;
+      templateAntigo: boolean;
       versoes: Versao[];
     }>(`/api/projetos/${projetoId}/prompt`)
       .then((r) => {
         setInicial(r.templateInicial);
+        setModeloRevisao(r.modeloRevisao || r.templateInicial);
+        setTemplateAntigo(Boolean(r.templateAntigo));
         setTemplate(r.vigente?.template || r.templateInicial);
         setVersoes(r.versoes);
       })
@@ -47,8 +53,11 @@ export default function Prompt() {
         template,
       });
       setOk(`Prompt salvo: ${r.promptId} (versão ${r.versao}).`);
-      const novamente = await apiGet<{ versoes: Versao[] }>(`/api/projetos/${projetoId}/prompt`);
+      const novamente = await apiGet<{ versoes: Versao[]; templateAntigo: boolean }>(
+        `/api/projetos/${projetoId}/prompt`,
+      );
       setVersoes(novamente.versoes);
+      setTemplateAntigo(Boolean(novamente.templateAntigo));
     } catch (e) {
       setErro((e as Error).message);
     }
@@ -78,6 +87,14 @@ export default function Prompt() {
       <p className="lead">Template editável. Salvar gera versão nova. Pré-visualizar não chama o modelo.</p>
       {erro && <p className="err">{erro}</p>}
       {ok && <p className="ok">{ok}</p>}
+      {templateAntigo && (
+        <p className="warn">
+          Esta versão salva ainda é do formato anterior.{" "}
+          <button className="btn sec" type="button" onClick={() => setTemplate(modeloRevisao)}>
+            Usar o modelo desta revisão
+          </button>
+        </p>
+      )}
       <div className="card">
         <textarea value={template} onChange={(e) => setTemplate(e.target.value)} />
         <div className="row" style={{ marginTop: 8 }}>

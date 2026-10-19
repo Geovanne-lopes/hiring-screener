@@ -38,10 +38,9 @@ def test_exportacao_na_ordem_da_planilha():
     }
     linhas = linhas_exportacao(candidatos, decisoes)
     assert linhas[0][0] == 2
-    assert linhas[0][2] == "busca-b"
-    assert linhas[0][3] == "b@exemplo.com"
-    assert linhas[0][4] == "11999990000"
-    assert linhas[0][8] == "Inelegível"
-    assert "fora da lista" in linhas[0][9]
+    assert linhas[0][2] == "b@exemplo.com"
+    assert linhas[0][3] == "11999990000"
+    assert linhas[0][7] == "Inelegível"
+    assert "fora da lista" in linhas[0][8]
     assert linhas[1][1] == "Leo"
-    assert linhas[1][8] == "Elegível na triagem"
+    assert linhas[1][7] == "Elegível na triagem"

@@ -104,13 +104,44 @@ def test_ca05_limites_inclusivos():
     assert not any(m["codigo"] == "idade_fora_da_faixa" for m in d45["motivos"])
 
 
-def test_escolaridade_aceita_termo_dentro_do_texto_do_recruiter():
-    d = avaliar_candidato(
-        _cand(escolaridade="Bacharelado · 2011 – 2014"),
-        _crit(esc=True, esc_aceitos=["Superior Completo", "Bacharelado", "bachelor"]),
+def test_escolaridade_contains_sem_genero_nem_abreviacao():
+    estatistica = avaliar_candidato(
+        _cand(escolaridade="Bacharelado em Estatística"),
+        _crit(esc=True, esc_aceitos=["Bacharelado"]),
     )
-    assert d["resultado"] == "elegivel"
-    assert d["motivos"] == []
+    assert estatistica["resultado"] == "elegivel"
+    traco = avaliar_candidato(
+        _cand(escolaridade="Bacharelado - Estatística"),
+        _crit(esc=True, esc_aceitos=["Bacharelado"]),
+    )
+    assert traco["resultado"] == "elegivel"
+    completo = avaliar_candidato(
+        _cand(escolaridade="Ensino Superior Completo"),
+        _crit(esc=True, esc_aceitos=["Ensino Superior"]),
+    )
+    assert completo["resultado"] == "elegivel"
+    administracao = avaliar_candidato(
+        _cand(escolaridade="Ensino Superior em Administração"),
+        _crit(esc=True, esc_aceitos=["Ensino Superior"]),
+    )
+    assert administracao["resultado"] == "elegivel"
+    incompleto = avaliar_candidato(
+        _cand(escolaridade="Superior incompleto"),
+        _crit(esc=True, esc_aceitos=["Ensino Superior"]),
+    )
+    assert incompleto["resultado"] == "inelegivel"
+    assert incompleto["motivos"][0]["codigo"] == "escolaridade_fora_da_lista"
+    assert incompleto["motivos"][0]["valorComparado"] == "superior incompleto"
+    frase_maior = avaliar_candidato(
+        _cand(escolaridade="Bacharelado"),
+        _crit(esc=True, esc_aceitos=["Bacharelado em Estatística"]),
+    )
+    assert frase_maior["resultado"] == "inelegivel"
+    sem_genero = avaliar_candidato(
+        _cand(escolaridade="Bacharela"),
+        _crit(esc=True, esc_aceitos=["Bacharel"]),
+    )
+    assert sem_genero["resultado"] == "inelegivel"
 
 
 def test_ca06_escolaridade_fora_da_lista():
@@ -186,15 +217,25 @@ def test_cargo_com_complemento_depois_de_separador_entra():
     assert intel["resultado"] == "elegivel"
 
 
-def test_ca11_primeira_palavra_nao_substitui_cargo():
-    d = avaliar_candidato(
+def test_ca11_contains_nao_corta_na_primeira_palavra():
+    dentro = avaliar_candidato(
         _cand(ultimoCargo="Vendedor Externo"),
         _crit(cargo=True, aceitos=["Vendedor"]),
     )
-    assert d["resultado"] == "inelegivel"
-    assert d["motivos"][0]["codigo"] == "cargo_fora_da_lista"
-    assert d["motivos"][0]["valorComparado"] == "vendedor externo"
-    assert d["motivos"][0]["valorComparado"] != "vendedor"
+    assert dentro["resultado"] == "elegivel"
+    fora = avaliar_candidato(
+        _cand(ultimoCargo="Analista"),
+        _crit(cargo=True, aceitos=["Analista de dados"]),
+    )
+    assert fora["resultado"] == "inelegivel"
+    assert fora["motivos"][0]["codigo"] == "cargo_fora_da_lista"
+    assert fora["motivos"][0]["valorComparado"] == "analista"
+    ordem = avaliar_candidato(
+        _cand(ultimoCargo="dados de Analista"),
+        _crit(cargo=True, aceitos=["Analista de dados"]),
+    )
+    assert ordem["resultado"] == "inelegivel"
+    assert ordem["motivos"][0]["valorComparado"] == "dados de analista"
 
 
 def test_ca11b_lista_com_cargo_completo_aceita():

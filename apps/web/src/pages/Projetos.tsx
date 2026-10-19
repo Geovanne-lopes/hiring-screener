@@ -59,7 +59,7 @@ export default function Projetos() {
   return (
     <>
       <h2>Projetos</h2>
-      <p className="lead">Uma vaga ou processo. Duplicar copia só os critérios duros, não o lote.</p>
+      <p className="lead">Uma vaga ou processo. Duplicar copia os critérios duros e a job description vigente, sem o lote.</p>
       {erro && <p className="err">{erro}</p>}
       <div className="card">
         <label htmlFor="novo">Criar projeto</label>

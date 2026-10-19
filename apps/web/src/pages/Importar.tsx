@@ -7,6 +7,7 @@ type Preview = {
   colunas: string[];
   linhas: Record<string, string>[];
   sugestaoUltimoCargo: string | null;
+  sugestaoEmpresa: string | null;
   xlsx: boolean;
 };
 
@@ -14,6 +15,7 @@ const mapaVazio = (): Mapeamento => ({
   ultimoCargo: null,
   idade: null,
   escolaridade: null,
+  empresa: null,
   nomeExibicao: null,
   respostasChatbot: [],
   cidade: null,
@@ -45,6 +47,7 @@ export default function Importar() {
       setMapa((m) => ({
         ...m,
         ultimoCargo: m.ultimoCargo || p.sugestaoUltimoCargo,
+        empresa: m.empresa || p.sugestaoEmpresa,
       }));
     } catch (e) {
       setErro((e as Error).message);
@@ -56,6 +59,10 @@ export default function Importar() {
     setOk("");
     if (!arquivo) {
       setErro("Selecione um arquivo CSV ou XLSX para importar.");
+      return;
+    }
+    if (mapa.respostasChatbot.some((col) => col.trim() === "")) {
+      setErro("A coluna de resposta precisa de um nome, porque esse nome é a pergunta.");
       return;
     }
     const fd = new FormData();
@@ -75,6 +82,11 @@ export default function Importar() {
   }
 
   function toggleResp(col: string) {
+    if (col.trim() === "") {
+      setErro("A coluna de resposta precisa de um nome, porque esse nome é a pergunta.");
+      return;
+    }
+    setErro("");
     const tem = mapa.respostasChatbot.includes(col);
     setMapa({
       ...mapa,
@@ -119,16 +131,16 @@ export default function Importar() {
               <table>
                 <thead>
                   <tr>
-                    {preview.colunas.map((c) => (
-                      <th key={c}>{c}</th>
+                    {preview.colunas.map((c, i) => (
+                      <th key={`${i}-${c}`}>{c.trim() ? c : "(coluna sem nome)"}</th>
                     ))}
                   </tr>
                 </thead>
                 <tbody>
                   {preview.linhas.map((lin, i) => (
                     <tr key={i}>
-                      {preview.colunas.map((c) => (
-                        <td key={c}>{lin[c]}</td>
+                      {preview.colunas.map((c, i) => (
+                        <td key={`${i}-${c}`}>{lin[c]}</td>
                       ))}
                     </tr>
                   ))}
@@ -144,11 +156,15 @@ export default function Importar() {
                 Anterior não é sugerido.
               </p>
             )}
+            {preview.sugestaoEmpresa && (
+              <p className="muted">Coluna sugerida para empresa: {preview.sugestaoEmpresa}. Confirme ou escolha outra.</p>
+            )}
             {(
               [
                 ["ultimoCargo", "Último cargo"],
                 ["idade", "Idade"],
                 ["escolaridade", "Escolaridade"],
+                ["empresa", "Empresa (opcional)"],
                 ["nomeExibicao", "Nome (rótulo, opcional)"],
                 ["cidade", "Cidade (metadado)"],
                 ["statusLegado", "Status legado (metadado)"],
@@ -169,15 +185,19 @@ export default function Importar() {
                 </select>
               </div>
             ))}
-            <p>Respostas de chatbot (uma ou mais colunas; sem nome prescrito)</p>
-            {preview.colunas.map((c) => (
-              <label key={c} className="switch">
+            <p>Respostas de chatbot. O nome da coluna é a pergunta.</p>
+            <p>
+              O nome da coluna é a pergunta. A IA cruza a resposta do candidato com essa pergunta e com a job
+              description. Não há critérios qualitativos separados.
+            </p>
+            {preview.colunas.map((c, i) => (
+              <label key={`${i}-${c}`} className="switch">
                 <input
                   type="checkbox"
-                  checked={mapa.respostasChatbot.includes(c)}
+                  checked={c.trim() !== "" && mapa.respostasChatbot.includes(c)}
                   onChange={() => toggleResp(c)}
                 />
-                {c}
+                {c.trim() ? c : "(coluna sem nome)"}
               </label>
             ))}
             <button className="btn" type="button" onClick={confirmar}>

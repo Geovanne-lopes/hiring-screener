@@ -16,7 +16,7 @@ from persistencia.repositorio import (
     salvar_criterios_det,
 )
 from triagem.avaliar import criterios_iniciais, incluir_item_lista
-from triagem.normalizacao import normalizar
+from triagem.comparacao import formas_que_tambem_entram, texto_comparado
 
 router = APIRouter(prefix="/api/projetos", tags=["projetos"])
 
@@ -31,6 +31,12 @@ class NomeIn(BaseModel):
 class CargosIn(BaseModel):
     ativo: bool
     aceitos: list[str] = []
+    bloqueados: list[str] = []
+
+
+class EmpresasIn(BaseModel):
+    ativo: bool = False
+    bloqueadas: list[str] = []
 
 
 class IdadeIn(BaseModel):
@@ -53,6 +59,7 @@ class CriteriosDetIn(BaseModel):
     cargos: CargosIn
     idade: IdadeIn
     escolaridade: EscolaridadeIn
+    empresas: EmpresasIn = Field(default_factory=EmpresasIn)
 
 
 def _exige(db: Session, projeto_id: str):
@@ -72,6 +79,7 @@ def _projeto_out(db: Session, projeto) -> dict:
         "criteriosDeterministicos": criterios_det_vigentes(db, projeto.id) or criterios_iniciais(),
         "criteriosVersao": projeto.criterios_det_vigente_id,
         "criteriosQualitativosVersaoId": projeto.criterios_qual_vigente_id,
+        "jobDescriptionVigenteId": projeto.job_description_vigente_id,
         "mapeamentoColunas": projeto.mapeamento_colunas,
         "quantidadeCandidatos": len(listar_candidatos(db, projeto.id)),
     }
@@ -128,12 +136,15 @@ def _sanitizar_lista(itens: list[str]) -> tuple[list[str], list[str]]:
 def put_criterios(projeto_id: str, body: CriteriosDetIn, db: Session = Depends(get_db)):
     projeto = _exige(db, projeto_id)
     cargos, avisos_c = _sanitizar_lista(body.cargos.aceitos)
+    bloqueados, avisos_b = _sanitizar_lista(body.cargos.bloqueados)
+    empresas, avisos_emp = _sanitizar_lista(body.empresas.bloqueadas)
     esc, avisos_e = _sanitizar_lista(body.escolaridade.configuracao.aceitos)
     if body.idade.minima is not None and body.idade.maxima is not None:
         if body.idade.minima > body.idade.maxima:
             raise HTTPException(status_code=400, detail=MSG_IDADE_INVERTIDA)
     snapshot = {
-        "cargos": {"ativo": body.cargos.ativo, "aceitos": cargos},
+        "cargos": {"ativo": body.cargos.ativo, "aceitos": cargos, "bloqueados": bloqueados},
+        "empresas": {"ativo": body.empresas.ativo, "bloqueadas": empresas},
         "idade": {
             "ativo": body.idade.ativo,
             "minima": body.idade.minima,
@@ -145,14 +156,16 @@ def put_criterios(projeto_id: str, body: CriteriosDetIn, db: Session = Depends(g
         },
     }
     versao = salvar_criterios_det(db, projeto, snapshot)
-    avisos = avisos_c + avisos_e
+    avisos = avisos_c + avisos_b + avisos_emp + avisos_e
     incompletos: list[str] = []
-    if snapshot["cargos"]["ativo"] and not snapshot["cargos"]["aceitos"]:
-        incompletos.append("cargos aceitos")
+    if snapshot["cargos"]["ativo"] and not snapshot["cargos"]["aceitos"] and not snapshot["cargos"]["bloqueados"]:
+        incompletos.append("cargos aceitos e bloqueados")
     if snapshot["idade"]["ativo"] and (
         snapshot["idade"]["minima"] is None or snapshot["idade"]["maxima"] is None
     ):
         incompletos.append("faixa de idade")
+    if snapshot["empresas"]["ativo"] and not snapshot["empresas"]["bloqueadas"]:
+        incompletos.append("empresas bloqueadas")
     if snapshot["escolaridade"]["ativo"] and not snapshot["escolaridade"]["configuracao"]["aceitos"]:
         incompletos.append("escolaridade")
     return {
@@ -160,6 +173,13 @@ def put_criterios(projeto_id: str, body: CriteriosDetIn, db: Session = Depends(g
         "criteriosDeterministicos": snapshot,
         "avisos": avisos,
         "incompletos": incompletos,
-        "formaComparadaCargos": [{"original": x, "comparado": normalizar(x)} for x in cargos],
-        "formaComparadaEscolaridade": [{"original": x, "comparado": normalizar(x)} for x in esc],
+        "formaComparadaCargos": [
+            {
+                "original": x,
+                "comparado": texto_comparado(x),
+                "tambemEntra": formas_que_tambem_entram(x),
+            }
+            for x in [*cargos, *bloqueados]
+        ],
+        "formaComparadaEscolaridade": [{"original": x, "comparado": texto_comparado(x)} for x in esc],
     }
